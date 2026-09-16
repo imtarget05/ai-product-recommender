@@ -4,9 +4,16 @@ pandas>=2.2.0
 scipy>=1.12.0
 scikit-learn>=1.4.0
 
-# Database & ORM
+# Database & ORM (Postgres + SQLite)
 sqlalchemy>=2.0.28
 alembic>=1.13.1
+psycopg2-binary>=2.9.9
+
+# Cache & Message Broker (Redis)
+redis>=5.0.0
+
+# Vector Database (Qdrant Cloud & Local)
+qdrant-client>=1.8.0
 
 # Web Framework & API Serving
 fastapi>=0.110.0

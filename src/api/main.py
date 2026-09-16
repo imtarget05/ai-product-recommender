@@ -23,15 +23,20 @@ async def lifespan(app: FastAPI):
         print(f"📊 Loaded {len(products)} products and {len(interactions)} interactions from database.")
 
         if products and interactions:
+            from src.services.qdrant_service import QdrantVectorStore
+            qdrant_store = QdrantVectorStore()
+
             hybrid = HybridRecommender(
                 cf_weight=settings.HYBRID_CF_WEIGHT,
                 cb_weight=settings.HYBRID_CB_WEIGHT,
-                cold_start_threshold=settings.COLD_START_THRESHOLD
+                cold_start_threshold=settings.COLD_START_THRESHOLD,
+                qdrant_store=qdrant_store
             )
             hybrid.fit(products, interactions)
 
             app_state["hybrid_model"] = hybrid
             app_state["product_dict"] = {p.id: p for p in products}
+            app_state["qdrant_store"] = qdrant_store
             app_state["ready"] = True
             print("🌟 RecSys-AI Serving Engine is READY!")
         else:

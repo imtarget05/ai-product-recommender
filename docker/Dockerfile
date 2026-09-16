@@ -7,19 +7,22 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy and install python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source code and scripts
+# Copy source code and config
 COPY src/ ./src/
 COPY scripts/ ./scripts/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
 COPY pytest.ini .
 
-# Expose FastAPI port
+# Expose default port
 EXPOSE 8000
 
-# Default entrypoint starts FastAPI with Uvicorn
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run Alembic migrations then start Uvicorn (supporting Railway's dynamic $PORT)
+CMD ["sh", "-c", "alembic upgrade head && uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

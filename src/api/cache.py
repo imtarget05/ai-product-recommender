@@ -16,13 +16,21 @@ class CacheManager:
     def _init_redis(self):
         try:
             import redis
-            client = redis.Redis(
-                host=settings.REDIS_HOST,
-                port=settings.REDIS_PORT,
-                db=settings.REDIS_DB,
-                socket_timeout=1.0,
-                decode_responses=True
-            )
+            if settings.REDIS_URL:
+                client = redis.from_url(
+                    settings.REDIS_URL,
+                    socket_timeout=1.5,
+                    decode_responses=True
+                )
+            else:
+                client = redis.Redis(
+                    host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    db=settings.REDIS_DB,
+                    password=settings.REDIS_PASSWORD,
+                    socket_timeout=1.5,
+                    decode_responses=True
+                )
             client.ping()
             self.redis_client = client
             print("🚀 Connected to Redis Cache server.")

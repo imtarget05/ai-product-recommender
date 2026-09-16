@@ -18,15 +18,17 @@ class HybridRecommender(BaseRecommender):
         self,
         cf_weight: float = 0.6,
         cb_weight: float = 0.4,
-        cold_start_threshold: int = 3
+        cold_start_threshold: int = 3,
+        qdrant_store: Optional[Any] = None
     ):
         super().__init__(name="HybridRecommender")
         self.cf_weight = cf_weight
         self.cb_weight = cb_weight
         self.cold_start_threshold = cold_start_threshold
+        self.qdrant_store = qdrant_store
 
         self.popularity_model = PopularityRecommender()
-        self.content_model = ContentBasedRecommender()
+        self.content_model = ContentBasedRecommender(qdrant_store=qdrant_store)
         self.cf_model = CollaborativeRecommender(n_factors=settings.CF_LATENT_FACTORS)
 
         self.user_interaction_counts: Dict[int, int] = defaultdict(int)

@@ -62,6 +62,11 @@ class ItemEmbedder:
         self.svd = TruncatedSVD(n_components=n_components, random_state=42)
         dense_vecs = self.svd.fit_transform(tfidf_matrix)
 
+        # Ensure exact embedding dimension by zero-padding if catalog is small
+        if dense_vecs.shape[1] < self.embedding_dim:
+            pad_width = self.embedding_dim - dense_vecs.shape[1]
+            dense_vecs = np.pad(dense_vecs, ((0, 0), (0, pad_width)), mode="constant")
+
         # L2 Normalize so dot product equals cosine similarity
         self.embeddings = normalize(dense_vecs, norm="l2", axis=1)
         return self.embeddings

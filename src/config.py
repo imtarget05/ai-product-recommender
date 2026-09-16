@@ -1,5 +1,6 @@
 """Centralized Configuration for RecSys-AI."""
 import os
+from typing import Optional
 from pathlib import Path
 from pydantic_settings import BaseSettings
 
@@ -20,14 +21,30 @@ class Settings(BaseSettings):
     EMBEDDINGS_DIR: Path = PROJECT_ROOT / "data" / "embeddings"
     DB_PATH: Path = PROJECT_ROOT / "data" / "recsys.db"
 
-    # Database
+    # Database (Railway Postgres or SQLite)
     DATABASE_URL: str = f"sqlite:///{PROJECT_ROOT}/data/recsys.db"
 
-    # Redis Cache
+    @property
+    def get_database_url(self) -> str:
+        """Fix Railway Postgres URL schema from postgres:// to postgresql:// if needed."""
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            url = url.replace("postgres://", "postgresql://", 1)
+        return url
+
+    # Redis Cache (Railway Redis or localhost)
+    REDIS_URL: Optional[str] = None # e.g. redis://default:password@host:port
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None
     CACHE_TTL_SECONDS: int = 300
+
+    # Vector DB (Qdrant Cloud Free Tier / Local Qdrant)
+    QDRANT_URL: Optional[str] = None # e.g. https://xxxx-xxxx.eu-central.aws.cloud.qdrant.io:6333
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_COLLECTION_NAME: str = "product_embeddings"
+    VECTOR_DIMENSION: int = 64
 
     # Recommendation Hyperparameters
     TOP_K_DEFAULT: int = 10
@@ -39,7 +56,7 @@ class Settings(BaseSettings):
     COLD_START_THRESHOLD: int = 3
 
     # Implicit Feedback Event Weights
-    # As shown in the infographic: view, click, add_to_cart, purchase, rating
+    # Matching the infographic: view, click, add_to_cart, purchase, rating
     EVENT_WEIGHTS: dict = {
         "view": 1.0,
         "click": 2.0,
