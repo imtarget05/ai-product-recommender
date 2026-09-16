@@ -158,11 +158,12 @@ with st.expander("📌 Sơ đồ Pipeline Kiến trúc 5 Khối", expanded=False
         st.markdown("##### 05 Output")
         st.caption("• Top-K Products\n• Sub-20ms Latency\n• Rationale")
 
-tab_live, tab_history, tab_similar, tab_benchmark = st.tabs([
+tab_live, tab_history, tab_similar, tab_benchmark, tab_agent = st.tabs([
     "🛍️ Bạn có thể thích (Live Recs)",
     "📜 Lịch sử tương tác của User",
     "🔍 Tìm sản phẩm tương đồng",
-    "📊 Benchmark Đánh giá Mô hình"
+    "📊 Benchmark Đánh giá Mô hình",
+    "🤖 Trợ lý AI Mua sắm (AI Shopping Assistant)"
 ])
 
 def send_interaction(user_id: int, product_id: int, event_type: str, weight: float):
@@ -362,3 +363,218 @@ with tab_benchmark:
         {"Mô hình / Pipeline": "Full Pipeline (+ Reranker)", "P@5": "5.60%", "R@5": "11.10%", "NDCG@5": "0.0985", "Coverage": "100.0%", "Ưu điểm": "Đa dạng hóa danh mục, Bayesian rating, lọc mua lại", "Nhược điểm": "Thêm một bước tính toán"}
     ]
     st.dataframe(pd.DataFrame(benchmark_data), use_container_width=True)
+
+# -------------------------------------------------------------
+# TAB 5: AI Shopping Assistant & RAG Semantic Search
+# -------------------------------------------------------------
+with tab_agent:
+    st.subheader("🤖 Trợ lý AI Mua sắm Cá nhân hóa & Tìm kiếm Ngôn ngữ Tự nhiên")
+    st.markdown("""
+    Lớp tương tác thông minh kết hợp **Groq LPU (Sub-second LLM)** + **Qdrant Vector DB (ANN Search)** + **Recommender Pipeline**:
+    - 🗣️ **Conversational Shopping Assistant**: Tư vấn sản phẩm, so sánh thông số, kiểm tra ngân sách, và thực thi thêm vào giỏ hàng.
+    - 🔎 **RAG Semantic Search**: Hiểu ngôn ngữ tự nhiên, tự bóc tách mức giá & danh mục (Intent Parsing), truy xuất sản phẩm chính xác.
+    """)
+
+    sub_chat, sub_search = st.tabs([
+        "💬 Trò chuyện Tư vấn 1-1 (Shopping Agent)",
+        "🔎 Tìm kiếm Tự nhiên (RAG Semantic Search)"
+    ])
+
+    with sub_chat:
+        # Chat Session State Setup
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = [
+                {
+                    "role": "assistant",
+                    "content": "Xin chào! Tôi là Trợ lý AI Mua sắm thông minh của RecSys-AI. Tôi có thể giúp bạn tìm kiếm theo ngân sách, so sánh thông số, hoặc thêm sản phẩm thẳng vào giỏ hàng. Bạn đang quan tâm đến sản phẩm gì hôm nay?",
+                    "suggested_products": []
+                }
+            ]
+
+        c_head1, c_head2 = st.columns([4, 1])
+        with c_head1:
+            st.caption(f"👤 Đang tư vấn cho: **User #{selected_user_id} ({selected_user_label})**")
+        with c_head2:
+            if st.button("🗑️ Xóa hội thoại", key="clear_chat_history"):
+                st.session_state.chat_history = [
+                    {
+                        "role": "assistant",
+                        "content": "Xin chào! Tôi là Trợ lý AI Mua sắm thông minh của RecSys-AI. Bạn đang quan tâm đến sản phẩm gì hôm nay?",
+                        "suggested_products": []
+                    }
+                ]
+                st.rerun()
+
+        # Render conversation history
+        for idx, msg in enumerate(st.session_state.chat_history):
+            with st.chat_message(msg["role"]):
+                st.write(msg["content"])
+
+                # If assistant provided suggested products, render them as cards
+                prods = msg.get("suggested_products", [])
+                if prods:
+                    cols = st.columns(min(len(prods), 4))
+                    for c_idx, prod in enumerate(prods[:4]):
+                        with cols[c_idx]:
+                            st.markdown(f"""
+                            <div class="product-card" style="margin-bottom:8px;">
+                                <img src="{prod.get('image_url')}" style="width:100%; height:120px; object-fit:cover; border-radius:6px; margin-bottom:6px;" onerror="this.src='https://via.placeholder.com/200x120?text=Product';"/>
+                                <div style="font-weight:700; font-size:0.85rem; height:36px; overflow:hidden;">{prod.get('title')}</div>
+                                <div style="color:#DC2626; font-weight:700; font-size:0.95rem;">{prod.get('price', 0):,.0f} đ</div>
+                                <div style="font-size:0.75rem; color:#D97706;">⭐ {prod.get('rating_avg', 4.5)}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            p_id = prod.get("product_id")
+                            if st.button("🛒 Thêm vào giỏ", key=f"chat_cart_{idx}_{p_id}_{selected_user_id}"):
+                                send_interaction(selected_user_id, p_id, "add_to_cart", 3.5)
+                                st.toast(f"Đã thêm sản phẩm #{p_id} vào giỏ hàng!", icon="🛒")
+                                st.rerun()
+
+        # Chat Input
+        if user_prompt := st.chat_input("Hỏi trợ lý (ví dụ: 'Tìm cho tôi giày chạy bộ dưới 2 triệu', 'Thêm sản phẩm #2 vào giỏ')..."):
+            st.session_state.chat_history.append({"role": "user", "content": user_prompt})
+
+            assistant_reply = ""
+            suggested_prods = []
+            action_info = None
+
+            if is_backend_online:
+                try:
+                    payload = {
+                        "messages": [{"role": m["role"], "content": m["content"]} for m in st.session_state.chat_history],
+                        "user_id": selected_user_id
+                    }
+                    r = requests.post(f"{API_BASE_URL}/agent/chat", json=payload, timeout=6.0)
+                    if r.status_code == 200:
+                        data = r.json()
+                        assistant_reply = data.get("reply", "")
+                        suggested_prods = data.get("suggested_products", [])
+                        action_info = data.get("action")
+                except Exception:
+                    pass
+
+            if not assistant_reply:
+                from src.agent.shopping_agent import ConversationalShoppingAssistant
+                assistant = ConversationalShoppingAssistant()
+                with get_db_context() as db:
+                    res = assistant.process_chat(
+                        messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.chat_history],
+                        user_id=selected_user_id,
+                        db=db
+                    )
+                    assistant_reply = res.get("reply", "")
+                    suggested_prods = res.get("suggested_products", [])
+                    action_info = res.get("action")
+
+            st.session_state.chat_history.append({
+                "role": "assistant",
+                "content": assistant_reply,
+                "suggested_products": suggested_prods
+            })
+
+            if action_info and action_info.get("type") == "add_to_cart":
+                st.toast(f"🛒 AI đã tự động thêm sản phẩm vào giỏ hàng!", icon="🎉")
+
+            st.rerun()
+
+    with sub_search:
+        st.markdown("##### 🔎 Tìm kiếm bằng Ngôn ngữ Tự nhiên (Natural Language RAG Search)")
+        st.caption("AI tự động bóc tách thực thể (Intent Parsing) gồm: Danh mục, Khoảng giá, và Ngữ nghĩa vector.")
+
+        # Quick Suggestion Chips
+        st.markdown("**Gợi ý truy vấn mẫu:**")
+        chip_cols = st.columns(4)
+        sample_queries = [
+            "laptop gaming mỏng nhẹ dưới 25 triệu",
+            "giày chạy bộ nam êm chân dưới 2 triệu",
+            "tai nghe bluetooth chống ồn pin trâu",
+            "đồng hồ thể thao chống nước dưới 5 triệu"
+        ]
+        chosen_sample = None
+        for c_idx, sq in enumerate(sample_queries):
+            with chip_cols[c_idx]:
+                if st.button(f"💡 {sq}", key=f"chip_{c_idx}"):
+                    chosen_sample = sq
+
+        search_input_val = chosen_sample if chosen_sample else ""
+        user_search_query = st.text_input(
+            "Nhập nhu cầu tìm kiếm của bạn:",
+            value=search_input_val,
+            placeholder="Ví dụ: tìm đồng hồ nam thể thao chống nước dưới 3 triệu..."
+        )
+
+        c_s1, c_s2 = st.columns([1, 4])
+        with c_s1:
+            do_search = st.button("🚀 Tìm kiếm với AI RAG", key="btn_do_rag_search")
+
+        if do_search and user_search_query.strip():
+            with st.spinner("Đang phân tích ý định và truy xuất vector..."):
+                search_res = None
+                if is_backend_online:
+                    try:
+                        r = requests.post(
+                            f"{API_BASE_URL}/agent/search",
+                            json={"query": user_search_query, "user_id": selected_user_id, "top_k": 6},
+                            timeout=6.0
+                        )
+                        if r.status_code == 200:
+                            search_res = r.json()
+                    except Exception:
+                        search_res = None
+
+                if not search_res:
+                    from src.agent.rag_search import RAGSearchEngine
+                    engine = RAGSearchEngine()
+                    with get_db_context() as db:
+                        search_res = engine.search(user_search_query, db=db, top_k=6, user_id=selected_user_id)
+
+                if search_res:
+                    intent = search_res.get("intent", {})
+                    lat = search_res.get("latency_ms", 0)
+
+                    cat_pill = intent.get("category") or "Tất cả danh mục"
+                    min_p = f"{intent.get('min_price'):,.0f} đ" if intent.get("min_price") else "0 đ"
+                    max_p = f"{intent.get('max_price'):,.0f} đ" if intent.get("max_price") else "Không giới hạn"
+
+                    st.success(f"🎯 **Ý định bóc tách (Intent):** Danh mục: `{cat_pill}` | Khoảng giá: `{min_p}` - `{max_p}` | Thời gian xử lý: `{lat} ms`")
+                    st.info(f"🤖 **Tổng hợp từ AI:** {search_res.get('reply')}")
+
+                    matched_prods = search_res.get("products", [])
+                    if matched_prods:
+                        st.markdown(f"##### Danh sách {len(matched_prods)} sản phẩm phù hợp nhất:")
+                        cols_per_row = 3
+                        for r_i in range(0, len(matched_prods), cols_per_row):
+                            row_prods = matched_prods[r_i:r_i + cols_per_row]
+                            r_cols = st.columns(len(row_prods))
+                            for c_i, p_item in enumerate(row_prods):
+                                pid = p_item["product_id"]
+                                with r_cols[c_i]:
+                                    st.markdown(f"""
+                                    <div class="product-card">
+                                        <img src="{p_item.get('image_url')}" style="width:100%; height:150px; object-fit:cover; border-radius:8px; margin-bottom:8px;" onerror="this.src='https://via.placeholder.com/300x180?text=Product';"/>
+                                        <div style="font-weight:700; font-size:0.95rem; height:42px; overflow:hidden;">{p_item.get('title')}</div>
+                                        <div style="color:#6B7280; font-size:0.8rem; margin:4px 0;">🏷️ {p_item.get('category')}</div>
+                                        <div style="color:#DC2626; font-weight:700; font-size:1.05rem;">{p_item.get('price', 0):,.0f} đ</div>
+                                        <div style="font-size:0.85rem; color:#D97706; margin-bottom:6px;">⭐ {p_item.get('rating_avg', 4.5)} • Điểm khớp: <b>{int(float(p_item.get('score', 0.8))*100)}%</b></div>
+                                        <div class="reason-box">💡 {p_item.get('reason')}</div>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+
+                                    c1, c2, c3 = st.columns(3)
+                                    with c1:
+                                        if st.button("👁️", key=f"rag_view_{pid}_{selected_user_id}", help="Xem chi tiết"):
+                                            send_interaction(selected_user_id, pid, "view", 1.0)
+                                            st.toast(f"Đã xem #{pid}!", icon="👁️")
+                                            st.rerun()
+                                    with c2:
+                                        if st.button("🛒", key=f"rag_cart_{pid}_{selected_user_id}", help="Thêm vào giỏ"):
+                                            send_interaction(selected_user_id, pid, "add_to_cart", 3.5)
+                                            st.toast(f"Đã thêm #{pid} vào giỏ hàng!", icon="🛒")
+                                            st.rerun()
+                                    with c3:
+                                        if st.button("💳", key=f"rag_buy_{pid}_{selected_user_id}", help="Mua ngay"):
+                                            send_interaction(selected_user_id, pid, "purchase", 5.0)
+                                            st.toast(f"Đã mua #{pid}!", icon="💳")
+                                            st.rerun()
+                    else:
+                        st.warning("Không tìm thấy sản phẩm nào khớp hoàn toàn với tiêu chí tìm kiếm.")

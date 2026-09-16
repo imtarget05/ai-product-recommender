@@ -46,7 +46,15 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_NAME: str = "product_embeddings"
     VECTOR_DIMENSION: int = 64
 
+    # LLM & Cognitive Agent (Groq LPU)
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_CHAT_MODEL: str = "qwen/qwen3.8-27b"
+    GROQ_FAST_MODEL: str = "groq/compound-mini"
+    GROQ_TIMEOUT_SECONDS: float = 4.0
+
+
     # Recommendation Hyperparameters
+
     TOP_K_DEFAULT: int = 10
     CF_LATENT_FACTORS: int = 32
     CF_REGULARIZATION: float = 0.05

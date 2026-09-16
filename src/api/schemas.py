@@ -80,3 +80,58 @@ class AdminReloadResponse(BaseModel):
     total_interactions: int
     reloaded_at: str
 
+
+# ==========================================
+# Cognitive Agent & RAG Assistant Schemas
+# ==========================================
+
+class AgentSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, description="Truy vấn tìm kiếm bằng ngôn ngữ tự nhiên")
+    user_id: Optional[int] = Field(None, ge=1, description="ID người dùng để cá nhân hóa (tùy chọn)")
+    top_k: int = Field(default=5, ge=1, le=20, description="Số lượng sản phẩm tối đa")
+
+
+class AgentSearchResponse(BaseModel):
+    query: str
+    intent: dict
+    reply: str
+    products: List[RecommendedProduct]
+    latency_ms: float
+
+
+class ChatMessage(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant|system)$")
+    content: str
+
+
+class AgentAction(BaseModel):
+    type: str = Field(..., description="Loại hành động: add_to_cart, search, compare...")
+    product_id: Optional[int] = None
+    product_title: Optional[str] = None
+    detail: Optional[str] = None
+
+
+class AgentChatRequest(BaseModel):
+    messages: List[ChatMessage] = Field(..., min_length=1, description="Lịch sử các lượt chat")
+    user_id: int = Field(default=1, ge=1, description="ID người dùng đang tương tác")
+
+
+class AgentChatResponse(BaseModel):
+    reply: str
+    suggested_products: List[RecommendedProduct] = []
+    action: Optional[AgentAction] = None
+    latency_ms: float
+
+
+class AgentExplainRequest(BaseModel):
+    product_id: int = Field(..., ge=1, description="ID sản phẩm cần giải thích lý do gợi ý")
+    user_id: Optional[int] = Field(None, ge=1, description="ID người dùng nhận gợi ý")
+    strategy: str = Field(default="hybrid", description="Chiến lược gợi ý (hybrid, collaborative, content_based...)")
+
+
+class AgentExplainResponse(BaseModel):
+    product_id: int
+    user_id: Optional[int] = None
+    explanation: str
+
+

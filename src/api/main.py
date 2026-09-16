@@ -7,6 +7,7 @@ from src.database.session import init_db, SessionLocal
 from src.database.models import Product, Interaction
 from src.models.hybrid import HybridRecommender
 from src.api.routes import router as api_router, app_state
+from src.api.agent_routes import router as agent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,8 +68,9 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Mount API router
+    # Mount API routers
     app.include_router(api_router)
+    app.include_router(agent_router)
 
     @app.get("/")
     def root():
@@ -77,7 +79,9 @@ def create_app() -> FastAPI:
             "status": "online",
             "docs_url": "/docs",
             "recommend_endpoint": "/api/v1/recommend/{user_id}",
-            "architecture": "Collaborative Filtering + Content-Based + Hybrid + Reranker"
+            "agent_search_endpoint": "/api/v1/agent/search",
+            "agent_chat_endpoint": "/api/v1/agent/chat",
+            "architecture": "Collaborative Filtering + Content-Based + Hybrid + Reranker + RAG LLM Agent"
         }
 
     return app
