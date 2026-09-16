@@ -47,3 +47,23 @@ data/embeddings/*
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Local & Internal
+AGENTS.md
+CLAUDE.md
+PRODUCT.md
+DESIGN.md
+plans/
+tasks/
+.ai/
+.archcontext/
+.opencode/
+.kilocode/
+.kilo/
+.clinerules/
+.claude/
+skill-observations/
+.impeccable/
+.codegraph/
+opencode.json
+
