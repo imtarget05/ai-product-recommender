@@ -1,7 +1,6 @@
 """Feature Engineering: Item Metadata Embedding Generator.
 Converts product title, category, description, and tags into dense vector embeddings.
-Uses TF-IDF + TruncatedSVD for instantaneous, dependency-light embeddings,
-with seamless extensibility for Sentence-Transformers.
+Hardened against small catalogs (N <= 1), empty texts, stopwords, and NaN/Inf anomalies.
 """
 import os
 import pickle
@@ -27,49 +26,96 @@ class ItemEmbedder:
         self.idx_to_id: Dict[int, int] = {}
 
     def _prepare_text(self, product: Product) -> str:
-        """Combine product metadata fields into a rich textual document."""
+        """Combine product metadata fields into a clean textual document."""
         parts = [
-            product.title or "",
-            product.category or "",
-            product.tags or "",
-            product.description or "",
+            str(product.title or ""),
+            str(product.category or ""),
+            str(product.tags or ""),
+            str(product.description or ""),
         ]
-        return " ".join(parts).lower()
+        clean_text = " ".join(filter(None, parts)).lower().strip()
+        # Fallback if empty to avoid TfidfVectorizer empty vocabulary crash
+        return clean_text if clean_text else "san pham mac dinh"
 
     def fit_transform(self, products: List[Product]) -> np.ndarray:
         """Fit feature extractor on product list and compute embeddings."""
         if not products:
-            raise ValueError("No products provided to embedder.")
+            self.embeddings = np.zeros((0, self.embedding_dim), dtype=np.float32)
+            return self.embeddings
 
         texts = [self._prepare_text(p) for p in products]
-        self.product_ids = [p.id for p in products]
+        self.product_ids = [int(p.id) for p in products]
         self.id_to_idx = {pid: i for i, pid in enumerate(self.product_ids)}
         self.idx_to_id = {i: pid for i, pid in enumerate(self.product_ids)}
 
-        # TF-IDF on unigrams and bigrams
+        # TF-IDF with fallback stop words and sublinear scaling
         self.vectorizer = TfidfVectorizer(
             ngram_range=(1, 2),
             max_features=5000,
-            sublinear_tf=True
+            sublinear_tf=True,
+            token_pattern=r"(?u)\b\w+\b" # Supports 1-letter tokens
         )
         tfidf_matrix = self.vectorizer.fit_transform(texts)
+        n_samples, n_features = tfidf_matrix.shape
 
-        # Truncated SVD for dense semantic embedding
-        n_components = min(self.embedding_dim, tfidf_matrix.shape[1] - 1, len(products) - 1)
-        if n_components < 2:
-            n_components = min(2, tfidf_matrix.shape[1])
+        # SVD requires at least 2 samples and 2 features
+        if n_samples >= 2 and n_features >= 2:
+            n_components = min(self.embedding_dim, n_features - 1, n_samples - 1)
+            n_components = max(1, n_components)
+            if n_components >= 2 and n_features >= 2:
+                try:
+                    self.svd = TruncatedSVD(n_components=n_components, random_state=42)
+                    dense_vecs = self.svd.fit_transform(tfidf_matrix)
+                except Exception:
+                    self.svd = None
+                    dense_vecs = tfidf_matrix.toarray()
+            else:
+                self.svd = None
+                dense_vecs = tfidf_matrix.toarray()
+        else:
+            self.svd = None
+            dense_vecs = tfidf_matrix.toarray()
 
-        self.svd = TruncatedSVD(n_components=n_components, random_state=42)
-        dense_vecs = self.svd.fit_transform(tfidf_matrix)
+        # Sanitize any NaNs or Infs from SVD
+        dense_vecs = np.nan_to_num(dense_vecs, nan=0.0, posinf=0.0, neginf=0.0)
 
-        # Ensure exact embedding dimension by zero-padding if catalog is small
+        # Pad with zeros to exact self.embedding_dim if fewer components
         if dense_vecs.shape[1] < self.embedding_dim:
             pad_width = self.embedding_dim - dense_vecs.shape[1]
             dense_vecs = np.pad(dense_vecs, ((0, 0), (0, pad_width)), mode="constant")
+        elif dense_vecs.shape[1] > self.embedding_dim:
+            dense_vecs = dense_vecs[:, :self.embedding_dim]
 
-        # L2 Normalize so dot product equals cosine similarity
-        self.embeddings = normalize(dense_vecs, norm="l2", axis=1)
+        # L2 Normalize
+        norms = np.linalg.norm(dense_vecs, axis=1, keepdims=True)
+        norms[norms == 0.0] = 1.0
+        self.embeddings = dense_vecs / norms
         return self.embeddings
+
+    def transform_single(self, product: Product) -> np.ndarray:
+        """Embed a new product in real time (for Item Cold-Start)."""
+        if self.vectorizer is None:
+            return np.zeros(self.embedding_dim, dtype=np.float32)
+
+        text = self._prepare_text(product)
+        tfidf_vec = self.vectorizer.transform([text])
+
+        if self.svd is not None:
+            dense_vec = self.svd.transform(tfidf_vec)
+        else:
+            dense_vec = tfidf_vec.toarray()
+
+        dense_vec = np.nan_to_num(dense_vec, nan=0.0, posinf=0.0, neginf=0.0)
+        if dense_vec.shape[1] < self.embedding_dim:
+            pad = self.embedding_dim - dense_vec.shape[1]
+            dense_vec = np.pad(dense_vec, ((0, 0), (0, pad)), mode="constant")
+        elif dense_vec.shape[1] > self.embedding_dim:
+            dense_vec = dense_vec[:, :self.embedding_dim]
+
+        norm = np.linalg.norm(dense_vec)
+        if norm > 0.0:
+            dense_vec = dense_vec / norm
+        return dense_vec[0]
 
     def save(self, output_dir: Optional[Path] = None):
         """Save fitted embedder and embedding matrix to disk."""
@@ -127,9 +173,8 @@ class ItemEmbedder:
 
         # Dot product with all normalized embeddings -> Cosine similarity
         scores = np.dot(self.embeddings, target_vec) # (N,)
-
-        # Exclude self
-        scores[target_idx] = -1.0
+        scores = np.nan_to_num(scores, nan=-1.0)
+        scores[target_idx] = -1.0 # Exclude self
 
         top_indices = np.argsort(scores)[::-1][:top_k]
         return [(self.idx_to_id[idx], float(scores[idx])) for idx in top_indices if scores[idx] > 0]

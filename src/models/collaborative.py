@@ -1,5 +1,6 @@
 """Collaborative Filtering Recommender using Matrix Factorization & Latent Factors.
 Decomposes user-item interaction matrix into latent representation spaces.
+Hardened against small matrices, NaN anomalies, and negative cosine scores.
 """
 from collections import defaultdict
 from typing import List, Dict, Any, Optional, Tuple
@@ -57,31 +58,56 @@ class CollaborativeRecommender(BaseRecommender):
             rows.append(u_idx)
             cols.append(i_idx)
             # Log transform implicit feedback to stabilize variance
-            data.append(np.log1p(w))
+            data.append(float(np.log1p(w)))
 
         if not rows:
             return
 
         n_users = len(unique_users)
         n_items = len(unique_items)
-        sparse_mat = csr_matrix((data, (rows, cols)), shape=(n_users, n_items))
+        sparse_mat = csr_matrix((data, (rows, cols)), shape=(n_users, n_items), dtype=np.float32)
 
         # Latent factor decomposition via Truncated SVD
-        actual_factors = min(self.n_factors, n_users - 1, n_items - 1)
-        if actual_factors < 2:
-            actual_factors = max(1, min(n_users, n_items))
+        # SVD requires n_components < min(n_users, n_items)
+        max_possible_factors = min(n_users, n_items) - 1
+        if max_possible_factors < 1:
+            # Degenerate matrix (e.g. 1 user or 1 item)
+            actual_factors = 1
+            dense = sparse_mat.toarray()
+            self.user_factors = dense / (np.linalg.norm(dense, axis=1, keepdims=True) + 1e-9)
+            self.item_factors = dense.T / (np.linalg.norm(dense.T, axis=1, keepdims=True) + 1e-9)
+            self.is_fitted = True
+            return
 
-        self.svd_model = TruncatedSVD(n_components=actual_factors, random_state=42)
-        # User factors P = U * Sigma
-        self.user_factors = self.svd_model.fit_transform(sparse_mat)
-        # Item factors Q = V
-        self.item_factors = self.svd_model.components_.T # (I, K)
+        actual_factors = min(self.n_factors, max_possible_factors)
 
-        # Normalize factors
-        self.user_factors = normalize(self.user_factors, norm="l2", axis=1)
-        self.item_factors = normalize(self.item_factors, norm="l2", axis=1)
+        try:
+            self.svd_model = TruncatedSVD(n_components=actual_factors, random_state=42)
+            self.user_factors = self.svd_model.fit_transform(sparse_mat)
+            self.item_factors = self.svd_model.components_.T # (I, K)
+        except Exception:
+            dense = sparse_mat.toarray()
+            self.user_factors = dense
+            self.item_factors = dense.T
+
+        # Sanitize NaNs
+        self.user_factors = np.nan_to_num(self.user_factors, nan=0.0)
+        self.item_factors = np.nan_to_num(self.item_factors, nan=0.0)
+
+        # L2 Normalize factors safely
+        u_norms = np.linalg.norm(self.user_factors, axis=1, keepdims=True)
+        u_norms[u_norms == 0.0] = 1.0
+        self.user_factors = self.user_factors / u_norms
+
+        i_norms = np.linalg.norm(self.item_factors, axis=1, keepdims=True)
+        i_norms[i_norms == 0.0] = 1.0
+        self.item_factors = self.item_factors / i_norms
 
         self.is_fitted = True
+
+    def add_interaction(self, user_id: int, product_id: int) -> None:
+        """Register real-time interaction for suppression & warm tracking."""
+        self.user_interacted_items[user_id].add(product_id)
 
     def recommend(
         self,
@@ -98,6 +124,8 @@ class CollaborativeRecommender(BaseRecommender):
 
         # Dot product with all items
         scores = np.dot(self.item_factors, u_vector) # (I,)
+        scores = np.nan_to_num(scores, nan=-1.0)
+        scores = scores.copy()
 
         # Exclude interacted items
         if exclude_interacted:
@@ -109,11 +137,13 @@ class CollaborativeRecommender(BaseRecommender):
         top_indices = np.argsort(scores)[::-1][:top_k]
         results = []
         for idx in top_indices:
-            score = float(scores[idx])
-            if score > 0.0:
+            raw_score = float(scores[idx])
+            if raw_score > 0.0:
+                # Map score to [0, 1] range
+                norm_score = max(0.0, min(raw_score, 1.0))
                 results.append({
                     "product_id": self.idx_to_item[idx],
-                    "score": round(min(score, 1.0), 4),
+                    "score": round(norm_score, 4),
                     "model": self.name,
                     "reason": "Người dùng có sở thích tương tự bạn cũng yêu thích sản phẩm này"
                 })
@@ -132,17 +162,21 @@ class CollaborativeRecommender(BaseRecommender):
         item_vector = self.item_factors[i_idx]
 
         sim_scores = np.dot(self.item_factors, item_vector)
+        sim_scores = np.nan_to_num(sim_scores, nan=-1.0)
+        sim_scores = sim_scores.copy()
         sim_scores[i_idx] = -1.0
 
         top_indices = np.argsort(sim_scores)[::-1][:top_k]
         results = []
         for idx in top_indices:
-            score = float(sim_scores[idx])
-            if score > 0.0:
+            raw_score = float(sim_scores[idx])
+            if raw_score > 0.0:
+                norm_score = max(0.0, min(raw_score, 1.0))
                 results.append({
                     "product_id": self.idx_to_item[idx],
-                    "score": round(score, 4),
+                    "score": round(norm_score, 4),
                     "model": self.name,
                     "reason": "Thường được mua hoặc quan tâm cùng với sản phẩm này"
                 })
         return results
+

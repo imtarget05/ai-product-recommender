@@ -67,13 +67,40 @@ def ndcg_at_k(actual: Set[int], predicted: List[int], k: int = 10) -> float:
     return dcg / idcg
 
 
+def graded_ndcg_at_k(actual_weights: Dict[int, float], predicted: List[int], k: int = 10) -> float:
+    """Normalized Discounted Cumulative Gain with graded relevance weights.
+    Graded relevance: e.g. purchase=5.0, add_to_cart=3.5, click=2.0, view=1.0.
+    DCG = \sum_{i=1}^k (2^{rel_i} - 1) / log2(i + 1)
+    """
+    if not actual_weights or not predicted or k <= 0:
+        return 0.0
+
+    pred_k = predicted[:k]
+    dcg = 0.0
+    for i, item in enumerate(pred_k):
+        rel = float(actual_weights.get(item, 0.0))
+        if rel > 0.0:
+            dcg += (math.pow(2.0, rel) - 1.0) / math.log2(i + 2)
+
+    # Ideal ranking: sort actual weights descending
+    sorted_rels = sorted(actual_weights.values(), reverse=True)[:k]
+    idcg = sum((math.pow(2.0, r) - 1.0) / math.log2(idx + 2) for idx, r in enumerate(sorted_rels))
+    if idcg <= 0.0:
+        return 0.0
+    return dcg / idcg
+
+
 def evaluate_recommender(
     recommender,
     test_user_items: Dict[int, Set[int]],
     k: int = 10,
-    total_catalog_size: int = 0
+    total_catalog_size: int = 0,
+    reranker = None,
+    product_dict = None
 ) -> Dict[str, float]:
-    """Benchmark a recommendation model across multiple evaluation users."""
+    """Benchmark a recommendation model across multiple evaluation users.
+    Optionally evaluates full ranking pipeline when reranker is supplied.
+    """
     precisions = []
     recalls = []
     hit_rates = []
@@ -85,8 +112,13 @@ def evaluate_recommender(
         if not actual_items:
             continue
 
-        raw_recs = recommender.recommend(uid, top_k=k, exclude_interacted=True)
-        pred_ids = [r["product_id"] for r in raw_recs]
+        raw_recs = recommender.recommend(uid, top_k=k * 2 if reranker else k, exclude_interacted=True)
+        if reranker and product_dict:
+            final_recs = reranker.rerank(raw_recs, product_dict=product_dict, top_k=k)
+            pred_ids = [r["product_id"] for r in final_recs]
+        else:
+            pred_ids = [r["product_id"] for r in raw_recs[:k]]
+
         all_recommended_items.update(pred_ids)
 
         precisions.append(precision_at_k(actual_items, pred_ids, k))
@@ -106,3 +138,4 @@ def evaluate_recommender(
         "CatalogCoverage": round(coverage, 4),
         "EvaluatedUsers": len(precisions)
     }
+

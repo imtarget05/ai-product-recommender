@@ -1,6 +1,8 @@
 """Qdrant Cloud & Local Vector Database Service.
 Handles ANN Vector Search, collection lifecycle, and product embedding indexing.
+Production-hardened with Circuit Breaker (fail-fast on network outage) and 1.5s timeout.
 """
+import time
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from qdrant_client import QdrantClient
@@ -8,32 +10,56 @@ from qdrant_client.http import models as qmodels
 from src.config import settings
 
 class QdrantVectorStore:
-    """Manages vector collection in Qdrant Cloud / Local."""
+    """Manages vector collection in Qdrant Cloud / Local with Circuit Breaker resilience."""
 
     def __init__(
         self,
         url: Optional[str] = None,
         api_key: Optional[str] = None,
         collection_name: Optional[str] = None,
-        dim: int = 64
+        dim: int = 64,
+        timeout: float = 1.5
     ):
         self.url = url or settings.QDRANT_URL
         self.api_key = api_key or settings.QDRANT_API_KEY
         self.collection_name = collection_name or settings.QDRANT_COLLECTION_NAME
         self.dim = dim
+        self.timeout = timeout
         self.client: Optional[QdrantClient] = None
+
+        # Circuit breaker state
+        self._failure_count = 0
+        self._circuit_open_until = 0.0
+
         self._init_client()
+
+    def _is_circuit_open(self) -> bool:
+        """Check if circuit breaker is currently open."""
+        return time.time() < self._circuit_open_until
+
+    def _record_success(self):
+        """Reset failure counter upon successful API call."""
+        self._failure_count = 0
+        self._circuit_open_until = 0.0
+
+    def _record_failure(self):
+        """Increment failure counter and trip breaker after 3 consecutive failures."""
+        self._failure_count += 1
+        if self._failure_count >= 3:
+            # Trip circuit breaker for 30 seconds
+            self._circuit_open_until = time.time() + 30.0
+            print("⚠️ Qdrant Circuit Breaker tripped! Temporarily bypassing Qdrant for 30s.")
 
     def _init_client(self):
         """Initialize connection to Qdrant Cloud or in-memory fallback."""
         try:
             if self.url and self.api_key:
-                # Qdrant Cloud Cluster
-                self.client = QdrantClient(url=self.url, api_key=self.api_key, timeout=5.0)
+                # Qdrant Cloud Cluster with short timeout
+                self.client = QdrantClient(url=self.url, api_key=self.api_key, timeout=self.timeout)
                 print(f"🌐 Connected to Qdrant Cloud: {self.url}")
             elif self.url:
                 # Local or self-hosted Qdrant URL
-                self.client = QdrantClient(url=self.url, timeout=5.0)
+                self.client = QdrantClient(url=self.url, timeout=self.timeout)
                 print(f"📦 Connected to Qdrant: {self.url}")
             else:
                 # Local In-Memory Qdrant for development/testing
@@ -41,6 +67,7 @@ class QdrantVectorStore:
                 print("🧠 Initialized In-Memory Qdrant Vector DB.")
 
             self._ensure_collection()
+            self._record_success()
         except Exception as e:
             print(f"⚠️ Warning initializing Qdrant: {e}. Falling back to :memory: mode.")
             self.client = QdrantClient(":memory:")
@@ -51,18 +78,23 @@ class QdrantVectorStore:
         if not self.client:
             return
 
-        collections = self.client.get_collections().collections
-        exists = any(c.name == self.collection_name for c in collections)
+        try:
+            collections = self.client.get_collections().collections
+            exists = any(c.name == self.collection_name for c in collections)
 
-        if not exists:
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                vectors_config=qmodels.VectorParams(
-                    size=self.dim,
-                    distance=qmodels.Distance.COSINE
+            if not exists:
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    vectors_config=qmodels.VectorParams(
+                        size=self.dim,
+                        distance=qmodels.Distance.COSINE
+                    )
                 )
-            )
-            print(f"✅ Created Qdrant collection '{self.collection_name}' (dim={self.dim}, metric=COSINE).")
+                print(f"✅ Created Qdrant collection '{self.collection_name}' (dim={self.dim}, metric=COSINE).")
+            self._record_success()
+        except Exception as e:
+            self._record_failure()
+            raise e
 
     def upsert_products(
         self,
@@ -71,7 +103,7 @@ class QdrantVectorStore:
         metadatas: Optional[List[Dict[str, Any]]] = None
     ) -> bool:
         """Upsert product vectors and payload metadata into Qdrant."""
-        if not self.client or len(product_ids) == 0:
+        if not self.client or len(product_ids) == 0 or self._is_circuit_open():
             return False
 
         points = []
@@ -91,13 +123,18 @@ class QdrantVectorStore:
 
         # Batch upsert (chunks of 100)
         batch_size = 100
-        for i in range(0, len(points), batch_size):
-            chunk = points[i:i + batch_size]
-            self.client.upsert(
-                collection_name=self.collection_name,
-                points=chunk
-            )
-        return True
+        try:
+            for i in range(0, len(points), batch_size):
+                chunk = points[i:i + batch_size]
+                self.client.upsert(
+                    collection_name=self.collection_name,
+                    points=chunk
+                )
+            self._record_success()
+            return True
+        except Exception:
+            self._record_failure()
+            return False
 
     def search_similar(
         self,
@@ -106,8 +143,8 @@ class QdrantVectorStore:
         exclude_ids: Optional[List[int]] = None,
         filter_category: Optional[str] = None
     ) -> List[Tuple[int, float, Dict[str, Any]]]:
-        """Perform Approximate Nearest Neighbors (ANN) vector search."""
-        if not self.client:
+        """Perform Approximate Nearest Neighbors (ANN) vector search with circuit breaker."""
+        if not self.client or self._is_circuit_open():
             return []
 
         # Build search filters
@@ -122,14 +159,18 @@ class QdrantVectorStore:
 
         q_filter = qmodels.Filter(must=must_conditions) if must_conditions else None
 
-        # ANN Search
-        hits = self.client.query_points(
-            collection_name=self.collection_name,
-            query=query_vector.tolist(),
-            query_filter=q_filter,
-            limit=top_k + (len(exclude_ids) if exclude_ids else 0),
-            with_payload=True
-        ).points
+        try:
+            hits = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector.tolist(),
+                query_filter=q_filter,
+                limit=top_k + (len(exclude_ids) if exclude_ids else 0),
+                with_payload=True
+            ).points
+            self._record_success()
+        except Exception:
+            self._record_failure()
+            return []
 
         exclude_set = set(exclude_ids or [])
         results = []
@@ -145,13 +186,19 @@ class QdrantVectorStore:
 
     def get_vector(self, product_id: int) -> Optional[np.ndarray]:
         """Retrieve stored embedding vector for a product."""
-        if not self.client:
+        if not self.client or self._is_circuit_open():
             return None
-        records = self.client.retrieve(
-            collection_name=self.collection_name,
-            ids=[product_id],
-            with_vectors=True
-        )
-        if records and records[0].vector:
-            return np.array(records[0].vector)
-        return None
+        try:
+            records = self.client.retrieve(
+                collection_name=self.collection_name,
+                ids=[product_id],
+                with_vectors=True
+            )
+            self._record_success()
+            if records and records[0].vector:
+                return np.array(records[0].vector)
+            return None
+        except Exception:
+            self._record_failure()
+            return None
+

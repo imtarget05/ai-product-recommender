@@ -2,11 +2,11 @@
 import time
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Path
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
-from src.database.session import get_db
+from src.database.session import get_db, check_db_health
 from src.database.models import Product, User, Interaction
 from src.api.schemas import (
     ProductItem,
@@ -15,7 +15,8 @@ from src.api.schemas import (
     InteractionCreate,
     InteractionResponse,
     UserItem,
-    HealthResponse
+    HealthResponse,
+    AdminReloadResponse
 )
 from src.api.cache import cache_manager
 from src.ranking.reranker import ProductReranker
@@ -33,26 +34,42 @@ app_state = {
 
 
 @router.get("/health", response_model=HealthResponse)
-def health_check(db: Session = Depends(get_db)):
-    """Check health and system readiness."""
-    total_prods = db.query(Product).count()
-    total_users = db.query(User).count()
-    total_inters = db.query(Interaction).count()
+def health_check(
+    detailed: bool = Query(default=False, description="Recalculate fresh table counts"),
+    db: Session = Depends(get_db)
+):
+    """Fast health check with non-blocking SELECT 1 and O(1) in-memory catalog stats."""
+    db_healthy = check_db_health()
+
+    hybrid = app_state.get("hybrid_model")
+    product_dict = app_state.get("product_dict", {})
+
+    if detailed or not product_dict:
+        total_prods = db.query(Product).count() if db_healthy else 0
+        total_users = db.query(User).count() if db_healthy else 0
+        total_inters = db.query(Interaction).count() if db_healthy else 0
+    else:
+        # Instantaneous O(1) in-memory counts without SQL table scanning
+        total_prods = len(product_dict)
+        total_users = len(hybrid.user_interaction_counts) if hybrid else 0
+        total_inters = sum(hybrid.user_interaction_counts.values()) if hybrid else 0
 
     return HealthResponse(
-        status="healthy",
+        status="healthy" if db_healthy else "degraded",
         app_name=settings.APP_NAME,
         version="0.1.0",
         models_ready=app_state["ready"],
+        db_connected=db_healthy,
         total_products=total_prods,
         total_users=total_users,
         total_interactions=total_inters
     )
 
 
+
 @router.get("/recommend/{user_id}", response_model=RecommendationResponse)
 def get_recommendations(
-    user_id: int,
+    user_id: int = Path(..., ge=1, description="ID của người dùng"),
     top_k: int = Query(default=10, ge=1, le=50),
     strategy: str = Query(default="hybrid", pattern="^(hybrid|collaborative|content_based|popularity)$"),
     bypass_cache: bool = Query(default=False),
@@ -71,10 +88,9 @@ def get_recommendations(
     if not app_state["ready"] or not app_state["hybrid_model"]:
         raise HTTPException(status_code=503, detail="Models are still initializing. Please retry in a few seconds.")
 
-    # Check cache first
-    cache_key = f"rec:user:{user_id}:strat:{strategy}:k:{top_k}"
+    # Check cache first using O(1) User Versioning
     if not bypass_cache:
-        cached_result = cache_manager.get(cache_key)
+        cached_result = cache_manager.get_recommendation_cache(user_id, strategy, top_k)
         if cached_result:
             cached_result["cached"] = True
             cached_result["latency_ms"] = round((time.time() - start_time) * 1000, 2)
@@ -140,13 +156,13 @@ def get_recommendations(
         "recommendations": [item.model_dump() for item in recommended_items]
     }
 
-    # Store in cache
-    cache_manager.set(cache_key, response_data, ttl_seconds=settings.CACHE_TTL_SECONDS)
+    # Store in cache with User Versioning
+    cache_manager.set_recommendation_cache(user_id, strategy, top_k, response_data, ttl_seconds=settings.CACHE_TTL_SECONDS)
     return response_data
 
 
 @router.get("/similar-products/{product_id}")
-def get_similar_products(product_id: int, top_k: int = Query(default=6, ge=1, le=20)):
+def get_similar_products(product_id: int = Path(..., ge=1, description="Product ID"), top_k: int = Query(default=6, ge=1, le=20)):
     """Get similar products based on content embeddings and co-interactions."""
     if not app_state["ready"] or not app_state["hybrid_model"]:
         raise HTTPException(status_code=503, detail="Models are initializing.")
@@ -174,7 +190,7 @@ def get_similar_products(product_id: int, top_k: int = Query(default=6, ge=1, le
 @router.post("/interact", response_model=InteractionResponse)
 def record_interaction(interaction: InteractionCreate, db: Session = Depends(get_db)):
     """Record real-time user behavior (view, click, add_to_cart, purchase, rating).
-    Automatically invalidates cache for closed-loop real-time updates.
+    Automatically propagates to in-memory models and invalidates cache in O(1).
     """
     valid_events = ["view", "click", "add_to_cart", "purchase", "rating"]
     if interaction.event_type not in valid_events:
@@ -207,12 +223,12 @@ def record_interaction(interaction: InteractionCreate, db: Session = Depends(get
     db.commit()
     db.refresh(new_inter)
 
-    # Invalidate cache for this user immediately
+    # Invalidate cache for this user immediately (O(1) version increment)
     cache_manager.invalidate_user(interaction.user_id)
 
-    # If hybrid model is in memory, update interaction count
+    # Propagate interaction in real time to in-memory recommendation engine
     if app_state["hybrid_model"]:
-        app_state["hybrid_model"].user_interaction_counts[interaction.user_id] += 1
+        app_state["hybrid_model"].on_new_interaction(new_inter)
 
     return InteractionResponse(
         status="recorded",
@@ -222,6 +238,27 @@ def record_interaction(interaction: InteractionCreate, db: Session = Depends(get
         event_type=new_inter.event_type,
         weight=new_inter.weight,
         timestamp=new_inter.timestamp.isoformat()
+    )
+
+
+@router.post("/admin/reload-model", response_model=AdminReloadResponse)
+def reload_model(db: Session = Depends(get_db)):
+    """Hot-reload recommendation models from database without server downtime."""
+    if not app_state["hybrid_model"]:
+        raise HTTPException(status_code=503, detail="Models not yet initialized.")
+
+    products = db.query(Product).all()
+    interactions = db.query(Interaction).all()
+    app_state["product_dict"] = {p.id: p for p in products}
+    app_state["hybrid_model"].fit(products, interactions)
+    app_state["ready"] = True
+
+    return AdminReloadResponse(
+        status="success",
+        message="Mô hình đã được tái huấn luyện và nạp lại thành công vào bộ nhớ phục vụ.",
+        total_products=len(products),
+        total_interactions=len(interactions),
+        reloaded_at=datetime.utcnow().isoformat()
     )
 
 
@@ -264,3 +301,4 @@ def list_users(limit: int = 50, db: Session = Depends(get_db)):
         )
         for u in users
     ]
+

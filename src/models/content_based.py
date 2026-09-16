@@ -4,6 +4,7 @@ Supports Qdrant Vector DB for cloud-native ANN search with seamless local fallba
 """
 from collections import defaultdict
 from typing import List, Dict, Any, Optional
+import numpy as np
 from src.database.models import Product, Interaction
 from src.models.base import BaseRecommender
 from src.features.text_embedder import ItemEmbedder
@@ -55,6 +56,28 @@ class ContentBasedRecommender(BaseRecommender):
             self.user_interactions[inter.user_id].append(inter)
 
         self.is_fitted = True
+
+    def add_interaction(self, interaction: Interaction) -> None:
+        """Register a new user interaction in memory immediately for real-time recommendation."""
+        self.user_interactions[interaction.user_id].append(interaction)
+
+    def index_new_product(self, product: Product) -> None:
+        """Dynamically embed and index a new product in real time (Item Cold-Start support)."""
+        self.product_dict[product.id] = product
+        if hasattr(self.embedder, "transform_single"):
+            vec = self.embedder.transform_single(product)
+            if self.qdrant_store and self.qdrant_store.client:
+                try:
+                    meta = {
+                        "title": product.title,
+                        "category": product.category,
+                        "price": product.price,
+                        "rating_avg": product.rating_avg
+                    }
+                    self.qdrant_store.upsert_products([product.id], np.array([vec]), [meta])
+                except Exception:
+                    pass
+
 
     def recommend(
         self,

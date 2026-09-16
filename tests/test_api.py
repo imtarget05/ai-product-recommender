@@ -64,3 +64,23 @@ def test_similar_products(client):
     data = response.json()
     assert "similar_products" in data
     assert len(data["similar_products"]) <= 3
+
+def test_admin_reload_model(client):
+    response = client.post("/api/v1/admin/reload-model")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert "reloaded_at" in data
+    assert data["total_products"] > 0
+
+def test_invalid_rating_interaction_rejected(client):
+    # Rating event without rating_value must return 422
+    payload = {
+        "user_id": 1,
+        "product_id": 1,
+        "event_type": "rating",
+        "rating_value": None
+    }
+    response = client.post("/api/v1/interact", json=payload)
+    assert response.status_code == 422
+

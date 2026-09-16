@@ -1,7 +1,7 @@
 """Pydantic Request & Response Schemas for FastAPI Endpoints."""
 from datetime import datetime
 from typing import List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class ProductItem(BaseModel):
     id: int
@@ -36,10 +36,16 @@ class RecommendationResponse(BaseModel):
     recommendations: List[RecommendedProduct]
 
 class InteractionCreate(BaseModel):
-    user_id: int = Field(..., description="ID của người dùng")
-    product_id: int = Field(..., description="ID của sản phẩm tương tác")
+    user_id: int = Field(..., ge=1, description="ID của người dùng (>= 1)")
+    product_id: int = Field(..., ge=1, description="ID của sản phẩm tương tác (>= 1)")
     event_type: str = Field(..., description="view, click, add_to_cart, purchase, rating")
     rating_value: Optional[float] = Field(None, ge=1.0, le=5.0, description="Giá trị đánh giá 1-5 sao")
+
+    @model_validator(mode="after")
+    def validate_rating_event(self):
+        if self.event_type == "rating" and self.rating_value is None:
+            raise ValueError("rating_value is required when event_type is 'rating'")
+        return self
 
 class InteractionResponse(BaseModel):
     status: str
@@ -62,6 +68,15 @@ class HealthResponse(BaseModel):
     app_name: str
     version: str
     models_ready: bool
+    db_connected: bool = True
+    total_products: Optional[int] = None
+    total_users: Optional[int] = None
+    total_interactions: Optional[int] = None
+
+class AdminReloadResponse(BaseModel):
+    status: str
+    message: str
     total_products: int
-    total_users: int
     total_interactions: int
+    reloaded_at: str
+

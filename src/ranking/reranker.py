@@ -1,8 +1,8 @@
 """Ranking Layer (Giai đoạn 4 - Candidate Reranking).
 Fine-ranks candidate items using multi-objective features:
-relevance score, product quality/rating, freshness, category diversity, and purchase suppression.
+relevance score, Bayesian product quality/rating, freshness, category diversity, and anti-fatigue purchase suppression.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 from src.database.models import Product
@@ -35,7 +35,10 @@ class ProductReranker:
 
         purchased_set = set(recently_purchased_ids or [])
         scored_candidates = []
-        now = datetime.utcnow()
+
+        # Bayesian rating priors
+        prior_weight = 5.0
+        prior_mean = 4.0
 
         for cand in candidates:
             pid = cand["product_id"]
@@ -48,16 +51,24 @@ class ProductReranker:
             if not product:
                 continue
 
-            # Feature 1: Model candidate score (normalized)
-            model_score = min(max(cand.get("score", 0.5), 0.0), 1.0)
+            # Feature 1: Model candidate score (normalized to [0, 1])
+            model_score = min(max(float(cand.get("score", 0.5)), 0.0), 1.0)
 
-            # Feature 2: Rating feature (0.0 to 1.0)
-            rating_score = (product.rating_avg or 4.0) / 5.0
+            # Feature 2: Bayesian smoothed rating score (0.0 to 1.0)
+            v = float(product.rating_count or 0)
+            r = float(product.rating_avg or prior_mean)
+            bayesian_rating = (v * r + prior_weight * prior_mean) / (v + prior_weight)
+            rating_score = min(max(bayesian_rating / 5.0, 0.0), 1.0)
 
             # Feature 3: Freshness feature (newer items receive slight boost)
             freshness_score = 0.5
             if product.created_at:
-                days_old = (now - product.created_at).days
+                prod_time = product.created_at
+                if getattr(prod_time, "tzinfo", None) is not None:
+                    now = datetime.now(timezone.utc)
+                else:
+                    now = datetime.utcnow()
+                days_old = max(0, (now - prod_time).days)
                 freshness_score = max(0.0, 1.0 - (days_old / 180.0))
 
             # Composite final ranking score
@@ -96,9 +107,6 @@ class ProductReranker:
             else:
                 overflow_pool.append(item)
 
-            if len(diverse_results) >= top_k:
-                break
-
         # If diversity constraint left us with fewer than top_k items, fill from overflow
         if len(diverse_results) < top_k:
             for item in overflow_pool:
@@ -107,3 +115,4 @@ class ProductReranker:
                     break
 
         return diverse_results[:top_k]
+

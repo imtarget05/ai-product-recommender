@@ -1,20 +1,27 @@
 """Benchmarking & Offline Evaluation Script.
-Evaluates Popularity, Content-Based, Collaborative, and Hybrid recommenders
-using train/test interaction split.
+Evaluates Popularity, Content-Based, Collaborative, Hybrid, and Full Reranked Pipeline
+using strict Global Cutoff Timestamp (T_cutoff) to prevent future data leakage.
 """
+import os
+import sys
 from collections import defaultdict
+
+# Add project root to sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.database.session import get_db_context
 from src.database.models import Product, Interaction
 from src.models.baseline import PopularityRecommender
 from src.models.content_based import ContentBasedRecommender
 from src.models.collaborative import CollaborativeRecommender
 from src.models.hybrid import HybridRecommender
+from src.ranking.reranker import ProductReranker
 from src.evaluation.metrics import evaluate_recommender
 
 def run_evaluation(test_ratio: float = 0.2, top_k: int = 5):
-    print("=" * 65)
-    print("🎯 RECSYS-AI MODEL BENCHMARK & OFFLINE EVALUATION")
-    print("=" * 65)
+    print("=" * 70)
+    print("🎯 RECSYS-AI MODEL BENCHMARK & OFFLINE EVALUATION (STRICT TEMPORAL)")
+    print("=" * 70)
 
     with get_db_context() as db:
         products = db.query(Product).all()
@@ -29,33 +36,25 @@ def run_evaluation(test_ratio: float = 0.2, top_k: int = 5):
             return
 
         total_catalog_size = len(products)
+        product_dict = {p.id: p for p in products}
         print(f"Loaded {total_catalog_size} catalog products and {len(interactions)} interactions.")
 
-        # Temporal split by user: last 20% interactions per user placed in test set
-        user_inter_map = defaultdict(list)
-        for inter in interactions:
-            user_inter_map[inter.user_id].append(inter)
+        # Strict Global Cutoff Timestamp Split (prevents future leakage across users)
+        split_idx = int(len(interactions) * (1.0 - test_ratio))
+        cutoff_timestamp = interactions[split_idx].timestamp
+        print(f"Global Cutoff Timestamp (T_cutoff): {cutoff_timestamp}")
 
-        train_interactions = []
+        train_interactions = [i for i in interactions if i.timestamp <= cutoff_timestamp]
+        test_events = [i for i in interactions if i.timestamp > cutoff_timestamp]
+
         test_user_items = defaultdict(set)
+        for inter in test_events:
+            # Positive signals in test phase
+            if inter.event_type in ["click", "add_to_cart", "purchase"] or (inter.rating_value and inter.rating_value >= 4.0):
+                test_user_items[inter.user_id].add(inter.product_id)
 
-        for uid, user_events in user_inter_map.items():
-            if len(user_events) < 5:
-                # Keep in train to allow model to learn anything
-                train_interactions.extend(user_events)
-                continue
-
-            split_idx = int(len(user_events) * (1.0 - test_ratio))
-            train_interactions.extend(user_events[:split_idx])
-
-            # Test set contains items user interacted with in test phase
-            for inter in user_events[split_idx:]:
-                # Only evaluate on positive signals (click, cart, purchase, high rating)
-                if inter.event_type in ["click", "add_to_cart", "purchase"] or (inter.rating_value and inter.rating_value >= 4.0):
-                    test_user_items[uid].add(inter.product_id)
-
-        print(f"Split completed: {len(train_interactions)} train interactions, {len(test_user_items)} test users.")
-        print("-" * 65)
+        print(f"Split completed: {len(train_interactions)} train interactions, {len(test_user_items)} active test users.")
+        print("-" * 70)
 
         # Initialize models
         models = [
@@ -77,16 +76,30 @@ def run_evaluation(test_ratio: float = 0.2, top_k: int = 5):
             )
             results[model.name] = metrics
 
-        print("\n" + "=" * 65)
-        print(f"{'Model':<25} | {'P@5':<8} | {'R@5':<8} | {'NDCG@5':<8} | {'Coverage':<8}")
-        print("-" * 65)
+        # Evaluate Full Hybrid + Reranker Pipeline
+        print(f"⚡ Evaluating Full Pipeline: Hybrid + Multi-Objective Reranker...")
+        reranker = ProductReranker()
+        pipeline_metrics = evaluate_recommender(
+            recommender=models[-1], # Hybrid
+            test_user_items=test_user_items,
+            k=top_k,
+            total_catalog_size=total_catalog_size,
+            reranker=reranker,
+            product_dict=product_dict
+        )
+        results["Pipeline (Hybrid + Reranker)"] = pipeline_metrics
+
+        print("\n" + "=" * 70)
+        print(f"{'Model / Pipeline':<30} | {'P@5':<8} | {'R@5':<8} | {'NDCG@5':<8} | {'Coverage':<8}")
+        print("-" * 70)
         for name, m in results.items():
-            print(f"{name:<25} | {m[f'Precision@{top_k}']:<8.4f} | {m[f'Recall@{top_k}']:<8.4f} | {m[f'NDCG@{top_k}']:<8.4f} | {m['CatalogCoverage']:<8.4f}")
-        print("=" * 65)
-        print("💡 Insights:")
-        print(" - Hybrid combines high precision from Content-Based with diversity from Collaborative Filtering.")
-        print(" - Popularity offers a strong baseline but suffers from lower catalog coverage.")
-        print("=" * 65)
+            print(f"{name:<30} | {m[f'Precision@{top_k}']:<8.4f} | {m[f'Recall@{top_k}']:<8.4f} | {m[f'NDCG@{top_k}']:<8.4f} | {m['CatalogCoverage']:<8.4f}")
+        print("=" * 70)
+        print("💡 Production Insights:")
+        print(" - Strict temporal split ensures zero future data leakage.")
+        print(" - Full Pipeline balances relevance, Bayesian quality ratings, and category diversity.")
+        print("=" * 70)
 
 if __name__ == "__main__":
     run_evaluation()
+
