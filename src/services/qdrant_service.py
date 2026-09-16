@@ -37,6 +37,10 @@ class QdrantVectorStore:
         """Check if circuit breaker is currently open."""
         return time.time() < self._circuit_open_until
 
+    def is_available(self) -> bool:
+        """Public liveness check: client exists and circuit breaker is closed."""
+        return self.client is not None and not self._is_circuit_open()
+
     def _record_success(self):
         """Reset failure counter upon successful API call."""
         self._failure_count = 0

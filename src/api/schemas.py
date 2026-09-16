@@ -38,7 +38,7 @@ class RecommendationResponse(BaseModel):
 class InteractionCreate(BaseModel):
     user_id: int = Field(..., ge=1, description="ID của người dùng (>= 1)")
     product_id: int = Field(..., ge=1, description="ID của sản phẩm tương tác (>= 1)")
-    event_type: str = Field(..., description="view, click, add_to_cart, purchase, rating")
+    event_type: str = Field(..., pattern="^(view|click|add_to_cart|purchase|rating)$", description="view, click, add_to_cart, purchase, rating")
     rating_value: Optional[float] = Field(None, ge=1.0, le=5.0, description="Giá trị đánh giá 1-5 sao")
 
     @model_validator(mode="after")

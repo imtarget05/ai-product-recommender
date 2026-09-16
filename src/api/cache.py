@@ -2,6 +2,7 @@
 Enhanced with O(1) User Cache Versioning (eliminating blocking Redis KEYS *)
 and thread-safe LRU memory cache.
 """
+import copy
 import time
 import json
 import threading
@@ -49,7 +50,7 @@ class CacheManager:
         if self.redis_client:
             try:
                 v = self.redis_client.get(f"user_ver:{user_id}")
-                return int(v) if v is not None else 1
+                return int(v) if v is not None else 0
             except Exception:
                 pass
 
@@ -69,7 +70,7 @@ class CacheManager:
         self.set(key, value, ttl_seconds=ttl_seconds)
 
     def get(self, key: str) -> Optional[Any]:
-        """Retrieve key from cache."""
+        """Retrieve key from cache (returns a deep copy to prevent mutation pollution)."""
         if self.redis_client:
             try:
                 val = self.redis_client.get(key)
@@ -82,14 +83,14 @@ class CacheManager:
         with self._lock:
             if key in self.memory_cache:
                 if now < self.memory_expiry.get(key, 0):
-                    return self.memory_cache[key]
+                    return copy.deepcopy(self.memory_cache[key])
                 else:
                     self.memory_cache.pop(key, None)
                     self.memory_expiry.pop(key, None)
         return None
 
     def set(self, key: str, value: Any, ttl_seconds: int = 300):
-        """Store key-value pair with TTL and capacity protection."""
+        """Store key-value pair with TTL and capacity protection (deep-copied)."""
         if self.redis_client:
             try:
                 self.redis_client.setex(key, ttl_seconds, json.dumps(value))
@@ -112,7 +113,7 @@ class CacheManager:
                         self.memory_cache.pop(k, None)
                         self.memory_expiry.pop(k, None)
 
-            self.memory_cache[key] = value
+            self.memory_cache[key] = copy.deepcopy(value)
             self.memory_expiry[key] = now + ttl_seconds
 
     def invalidate_user(self, user_id: int):

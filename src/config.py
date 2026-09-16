@@ -48,8 +48,8 @@ class Settings(BaseSettings):
 
     # LLM & Cognitive Agent (Groq LPU)
     GROQ_API_KEY: Optional[str] = None
-    GROQ_CHAT_MODEL: str = "qwen/qwen3.8-27b"
-    GROQ_FAST_MODEL: str = "groq/compound-mini"
+    GROQ_CHAT_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_FAST_MODEL: str = "llama-3.1-8b-instant"
     GROQ_TIMEOUT_SECONDS: float = 4.0
 
 

@@ -29,6 +29,16 @@ class CollaborativeRecommender(BaseRecommender):
 
     def fit(self, products: List[Product], interactions: List[Interaction]) -> None:
         """Construct sparse interaction matrix and decompose into user/item latent factors."""
+        # A refit replaces the previous snapshot, including empty datasets.
+        self.is_fitted = False
+        self.user_to_idx.clear()
+        self.idx_to_user.clear()
+        self.item_to_idx.clear()
+        self.idx_to_item.clear()
+        self.user_interacted_items.clear()
+        self.user_factors = None
+        self.item_factors = None
+        self.svd_model = None
         if not products or not interactions:
             return
 
@@ -70,25 +80,33 @@ class CollaborativeRecommender(BaseRecommender):
         # Latent factor decomposition via Truncated SVD
         # SVD requires n_components < min(n_users, n_items)
         max_possible_factors = min(n_users, n_items) - 1
+        # Shared degenerate fallback: represent the interaction matrix exactly
+        # in one-hot basis so dot(user_factors[u], item_factors[i]) reproduces
+        # the raw affinity. This keeps factor widths consistent for both the
+        # degenerate-shape branch and the SVD failure fallback below.
+        def _exact_factorization(matrix: np.ndarray) -> None:
+            n_users, n_items = matrix.shape
+            if n_users <= n_items:
+                # Each user is a basis vector; item vectors carry per-user weights.
+                self.user_factors = np.eye(n_users, dtype=np.float32)
+                self.item_factors = matrix.T.astype(np.float32)
+            else:
+                # Item vectors are the basis; user vector carries per-item weights.
+                self.user_factors = matrix.astype(np.float32)
+                self.item_factors = np.eye(n_items, dtype=np.float32)
+
         if max_possible_factors < 1:
             # Degenerate matrix (e.g. 1 user or 1 item)
-            actual_factors = 1
-            dense = sparse_mat.toarray()
-            self.user_factors = dense / (np.linalg.norm(dense, axis=1, keepdims=True) + 1e-9)
-            self.item_factors = dense.T / (np.linalg.norm(dense.T, axis=1, keepdims=True) + 1e-9)
-            self.is_fitted = True
-            return
-
-        actual_factors = min(self.n_factors, max_possible_factors)
-
-        try:
-            self.svd_model = TruncatedSVD(n_components=actual_factors, random_state=42)
-            self.user_factors = self.svd_model.fit_transform(sparse_mat)
-            self.item_factors = self.svd_model.components_.T # (I, K)
-        except Exception:
-            dense = sparse_mat.toarray()
-            self.user_factors = dense
-            self.item_factors = dense.T
+            _exact_factorization(sparse_mat.toarray())
+        else:
+            actual_factors = min(self.n_factors, max_possible_factors)
+            try:
+                self.svd_model = TruncatedSVD(n_components=actual_factors, random_state=42)
+                self.user_factors = self.svd_model.fit_transform(sparse_mat)
+                self.item_factors = self.svd_model.components_.T # (I, K)
+            except Exception:
+                self.svd_model = None
+                _exact_factorization(sparse_mat.toarray())
 
         # Sanitize NaNs
         self.user_factors = np.nan_to_num(self.user_factors, nan=0.0)

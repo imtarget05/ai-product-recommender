@@ -264,9 +264,9 @@ def reload_model(db: Session = Depends(get_db)):
 
 @router.get("/products", response_model=List[ProductItem])
 def list_products(
-    category: Optional[str] = None,
-    search: Optional[str] = None,
-    limit: int = 50,
+    category: Optional[str] = Query(default=None, max_length=100),
+    search: Optional[str] = Query(default=None, max_length=100),
+    limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db)
 ):
     """Retrieve catalog products with optional category and search filters."""
@@ -274,12 +274,17 @@ def list_products(
     if category:
         query = query.filter(Product.category == category)
     if search:
-        query = query.filter(Product.title.ilike(f"%{search}%"))
+        # Escape LIKE wildcards so user input is treated literally
+        safe = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        query = query.filter(Product.title.ilike(f"%{safe}%", escape="\\"))
     return query.limit(limit).all()
 
 
 @router.get("/users", response_model=List[UserItem])
-def list_users(limit: int = 50, db: Session = Depends(get_db)):
+def list_users(
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db)
+):
     """Retrieve users with their total interaction counts."""
     users = db.query(User).limit(limit).all()
     user_ids = [u.id for u in users]

@@ -5,6 +5,7 @@ applies catalog attribute filters, and synthesizes answers via Groq LPU.
 import re
 import json
 import time
+import numpy as np
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy.orm import Session
 
@@ -165,7 +166,14 @@ class RAGSearchEngine:
         query_vec = self.embedder.transform_single(target_prod)
 
         candidate_hits = []
-        if self.qdrant_store and self.qdrant_store.is_available() if hasattr(self.qdrant_store, "is_available") else True:
+        qdrant_available = bool(
+            getattr(self.qdrant_store, "is_available", lambda: bool(self.qdrant_store))()
+            if self.qdrant_store is not None else False
+        )
+        # Skip ANN lookup for degenerate (zero-norm) query vectors: they carry
+        # no semantic signal and would return arbitrary cosine neighbours.
+        query_has_signal = bool(np.linalg.norm(query_vec) > 1e-9)
+        if qdrant_available and query_has_signal:
             try:
                 candidate_hits = self.qdrant_store.search_similar(
                     query_vector=query_vec,

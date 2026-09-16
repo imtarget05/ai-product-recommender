@@ -104,8 +104,7 @@ class ContentBasedRecommender(BaseRecommender):
         ref_prod = self.product_dict.get(last_interacted_pid)
         reason_ref = ref_prod.category if ref_prod else "sở thích gần đây"
 
-        # Try Qdrant ANN search first if available
-        if self.qdrant_store and self.qdrant_store.client:
+        if self.qdrant_store and self.qdrant_store.is_available():
             try:
                 qdrant_hits = self.qdrant_store.search_similar(
                     query_vector=user_vec,
