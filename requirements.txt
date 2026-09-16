@@ -1,0 +1,25 @@
+# Core ML & Data Science
+numpy>=1.26.0,<2.0.0
+pandas>=2.2.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
+
+# Database & ORM
+sqlalchemy>=2.0.28
+alembic>=1.13.1
+
+# Web Framework & API Serving
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+pydantic-settings>=2.2.0
+httpx>=0.27.0
+
+# Frontend & UI Demo
+streamlit>=1.32.0
+
+# Utilities & Testing
+python-dotenv>=1.0.1
+pytest>=8.0.0
+requests>=2.31.0
+tqdm>=4.66.0
