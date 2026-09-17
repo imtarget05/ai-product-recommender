@@ -1,5 +1,9 @@
 """FastAPI Route Handlers for Recommendation System Serving."""
 import time
+import logging
+
+logger = logging.getLogger(__name__)
+
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
@@ -90,12 +94,13 @@ def get_recommendations(
 
     # Check cache first using O(1) User Versioning
     if not bypass_cache:
-        cached_result = cache_manager.get_recommendation_cache(user_id, strategy, top_k)
-        if cached_result:
-            cached_result["cached"] = True
-            cached_result["latency_ms"] = round((time.time() - start_time) * 1000, 2)
-            return cached_result
+        cached = cache_manager.get_recommendation_cache(user_id, strategy, top_k)
+        if cached:
+            cached["cached"] = True
+            cached["latency_ms"] = round((time.time() - start_time) * 1000, 2)
+            return cached
 
+    retrieve_start_time = time.time()
     # Select model strategy
     hybrid = app_state["hybrid_model"]
     if strategy == "hybrid":
@@ -115,6 +120,8 @@ def get_recommendations(
         for c in candidates:
             c["reason"] = "Sản phẩm xu hướng nổi bật (Cold-start fallback)"
 
+    retrieve_latency = round((time.time() - retrieve_start_time) * 1000, 2)
+
     # Get recent purchases to avoid recommending already bought items
     recent_purchases = (
         db.query(Interaction.product_id)
@@ -123,6 +130,7 @@ def get_recommendations(
     )
     purchased_ids = [p[0] for p in recent_purchases]
 
+    rank_start_time = time.time()
     # Candidate Reranking (Phase 4: Multi-objective scoring & diversity)
     reranked = app_state["reranker"].rerank(
         candidates=candidates,
@@ -130,6 +138,9 @@ def get_recommendations(
         recently_purchased_ids=purchased_ids,
         top_k=top_k
     )
+    rank_latency = round((time.time() - rank_start_time) * 1000, 2)
+
+    logger.info(f"[Metrics] ML Pipeline - Strategy: {strategy}, Retrieve: {retrieve_latency}ms, Rank: {rank_latency}ms, Candidates: {len(candidates)}, Results: {len(reranked)}")
 
     recommended_items = [
         RecommendedProduct(

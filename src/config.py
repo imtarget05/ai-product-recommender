@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     QDRANT_COLLECTION_NAME: str = "product_embeddings"
     VECTOR_DIMENSION: int = 64
 
-    # LLM & Cognitive Agent (Groq LPU)
+    # Optional LLM Agent (External Service - Not in Core RecSys Path)
     GROQ_API_KEY: Optional[str] = None
     GROQ_CHAT_MODEL: str = "llama-3.3-70b-versatile"
     GROQ_FAST_MODEL: str = "llama-3.1-8b-instant"
