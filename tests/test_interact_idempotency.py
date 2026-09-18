@@ -36,6 +36,24 @@ def client():
             env=env,
             check=False,
         )
+        if proc.returncode != 0 and "already exists" in proc.stderr:
+            # DB was created by init_db()/seed (base tables, no version stamp):
+            # stamp the base revision, then upgrade the remainder (002).
+            stamp = subprocess.run(
+                [sys.executable, "-m", "alembic", "stamp", "001_initial_schema"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+            assert stamp.returncode == 0, stamp.stderr
+            proc = subprocess.run(
+                [sys.executable, "-m", "alembic", "upgrade", "head"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
         assert proc.returncode == 0, proc.stderr
     # Seed the rows the endpoint requires (fresh DBs have none).
     from sqlalchemy import create_engine, text
