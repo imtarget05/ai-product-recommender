@@ -7,10 +7,10 @@ logger = logging.getLogger(__name__)
 
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 from src.database.session import get_db, check_db_health
 from src.database.models import Product, User, Interaction
@@ -201,9 +201,14 @@ def get_similar_products(product_id: int = Path(..., ge=1, description="Product 
 
 
 @router.post("/interact", response_model=InteractionResponse)
-def record_interaction(interaction: InteractionCreate, db: Session = Depends(get_db)):
+def record_interaction(
+    interaction: InteractionCreate,
+    request: Request,
+    db: Session = Depends(get_db)
+):
     """Record real-time user behavior (view, click, add_to_cart, purchase, rating).
     Automatically propagates to in-memory models and invalidates cache in O(1).
+    With X-Idempotency-Key: replays return the stored response (Plan 03).
     """
     valid_events = ["view", "click", "add_to_cart", "purchase", "rating"]
     if interaction.event_type not in valid_events:
@@ -211,6 +216,20 @@ def record_interaction(interaction: InteractionCreate, db: Session = Depends(get
             status_code=400,
             detail=f"Invalid event_type. Must be one of {valid_events}"
         )
+
+    idem_key = (request.headers.get("X-Idempotency-Key") or "").strip()
+    if idem_key:
+        prior = db.execute(
+            text("SELECT response FROM idempotency_keys "
+                 "WHERE caller_scope = 'interact' AND idem_key = :k"
+                 " AND status = 'completed'"),
+            {"k": idem_key},
+        ).first()
+        if prior is not None:
+            import json as _json
+
+            stored = _json.loads(prior[0])
+            return InteractionResponse(**stored)
 
     # Check existence
     user = db.query(User).filter(User.id == interaction.user_id).first()
@@ -243,7 +262,7 @@ def record_interaction(interaction: InteractionCreate, db: Session = Depends(get
     if app_state["hybrid_model"]:
         app_state["hybrid_model"].on_new_interaction(new_inter)
 
-    return InteractionResponse(
+    response = InteractionResponse(
         status="recorded",
         interaction_id=new_inter.id,
         user_id=new_inter.user_id,
@@ -252,6 +271,22 @@ def record_interaction(interaction: InteractionCreate, db: Session = Depends(get
         weight=new_inter.weight,
         timestamp=new_inter.timestamp.isoformat()
     )
+    if idem_key:
+        _store_interact_idempotency(db, idem_key, response.model_dump(mode="json"))
+    return response
+
+
+def _store_interact_idempotency(db: Session, idem_key: str, body: dict) -> None:
+    """Persist the terminal interact response for replays (Plan 03)."""
+    import json as _json
+
+    db.execute(
+        text("INSERT OR REPLACE INTO idempotency_keys "
+             "(caller_scope, idem_key, fingerprint, status, response, expires_at) "
+             "VALUES ('interact', :k, '', 'completed', :r, '')"),
+        {"k": idem_key, "r": _json.dumps(body, default=str)},
+    )
+    db.commit()
 
 
 @router.post("/admin/reload-model", response_model=AdminReloadResponse)
