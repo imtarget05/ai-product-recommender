@@ -107,7 +107,8 @@ def agent_conversational_chat(
     result = assistant.process_chat(
         messages=raw_messages,
         user_id=request.user_id,
-        db=db
+        db=db,
+        idempotency_key=request.idempotency_key,
     )
 
     suggested = [

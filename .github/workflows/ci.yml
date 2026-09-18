@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Pytest (offline, no external services)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DEBUG: "false"
+      # Explicitly unset to guarantee the offline fallback paths are exercised.
+      REDIS_URL: ""
+      QDRANT_URL: ""
+      QDRANT_API_KEY: ""
+      GROQ_API_KEY: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Seed demo database (SQLite, synthetic offline)
+        run: python -m scripts.generate_seed_data
+
+      - name: Run test suite
+        run: python -m pytest tests/ -v --tb=short
+
+  docker:
+    name: Docker build (pytest runs inside image build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (test gate runs as a build layer)
+        run: docker build -f docker/Dockerfile -t recsys-ai:ci .

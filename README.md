@@ -1,5 +1,46 @@
 # 🛍️ RecSys-AI — Hệ Thống Gợi Ý Sản Phẩm Toàn Diện
 
+## ☁️ DEPLOYMENT CHỐT: Cloud-Native Traditional ML (Non-LLM core)
+
+- **Kiến trúc duy nhất khi deploy: CLOUD-NATIVE microservices — Non-LLM ở core.**
+  Critical path `/api/v1/recommend/{user_id}` là 2-stage thuần Traditional ML,
+  không gọi bất kỳ LLM nào:
+  **Retrieve** (SVD latent factors + Qdrant ANN / TF-IDF 64-dim + Popularity cold-start,
+  Hybrid ensemble α·CF + (1−α)·CB) → **Rank** (multi-objective reranker:
+  rating boost, freshness, category diversity, purchase suppression) →
+  FastAPI + Redis cache + Postgres/Qdrant, autoscale, **SLA p95 < 50ms**.
+- **Training = Classical Recommender Fitting trên Colab**
+  (`colab/train_recsys_T4.ipynb`: SVD + TF-IDF fit offline, export artifacts),
+  tách bạch khỏi **Inference** (serving online, xem bảng Training vs Inference
+  trong `plans/deployment-cloud-native.md`).
+- **LLM (Ollama `qwen2.5:3b` local / Groq) là tiện ích phụ OPTIONAL** —
+  chỉ dùng cho giải thích gợi ý (`/agent/explain`) và search ngôn ngữ tự nhiên
+  (`/agent/search`, `/agent/chat`), có circuit-breaker + heuristic fallback,
+  KHÔNG nằm critical path recommend. Ollama fail → heuristic vẫn chạy,
+  endpoint `/recommend` không bị ảnh hưởng.
+- **Observability tách latency Retrieve vs Rank**: mỗi request `/recommend`
+  log `[Metrics] ML Pipeline - Retrieve: Xms, Rank: Yms` (xem `src/api/routes.py`),
+  phục vụ tuning SLA từng stage độc lập.
+- Chi tiết deploy: xem [docs/DEPLOYMENT_CLOUD_NATIVE.md](docs/DEPLOYMENT_CLOUD_NATIVE.md).
+
+## Engineering evidence
+
+- GitHub Actions: pytest offline → Docker build trên push/PR vào main. Cần branch protection riêng để bắt buộc checks.
+- Baseline đã xác minh: **48 passed, 2 warnings**; có thêm regression tests cho evaluation JSON, xem CI để biết số hiện tại.
+- [Evaluation JSON](data/evaluation/seed_results.json): snapshot **synthetic seed**, không phải RetailRocket/production benchmark.
+- Latency production chưa đo; claim sub-20ms đã gỡ.
+- [Architecture & observability](docs/architecture.md) · [Limitations & reproduction](docs/limitations.md).
+
+Tests API cần dữ liệu. Dùng DB tạm trước khi seed (seed xóa dữ liệu cũ):
+
+```bash
+export DATABASE_URL="sqlite:////tmp/recsys-disposable-tests.db"
+export QDRANT_URL='' QDRANT_API_KEY='' GROQ_API_KEY=''
+python -m scripts.generate_seed_data
+python -m pytest tests/ -v --tb=short
+```
+
+
 > **Recommendation System** phân tích hành vi người dùng (view, click, cart, purchase, rating) để đề xuất sản phẩm tối ưu theo thời gian thực.
 > Tích hợp trọn bộ stack hiện đại sẵn sàng deploy: **Railway (FastAPI + PostgreSQL + Redis) + Qdrant Cloud Free Tier (Vector DB) + RetailRocket Dataset (Kaggle)**.
 
@@ -9,7 +50,7 @@
 
 | Thành phần | Công nghệ / Dịch vụ | Vai trò & Mục đích |
 |---|---|---|
-| **API Serving Backend** | **FastAPI** on **Railway** | Endpoint `/recommend/{user_id}`, sub-20ms latency, autoscale |
+| **API Serving Backend** | **FastAPI** on **Railway** | Endpoint `/api/v1/recommend/{user_id}`; chưa xác minh latency production |
 | **Relational Database** | **PostgreSQL** on **Railway** | Lưu trữ quan hệ: Catalog, User profiles, Interaction logs, Search logs |
 | **Database Migrations** | **Alembic** | Quản lý version schema DB, auto migrate khi deploy (`alembic upgrade head`) |
 | **Cache & Realtime State**| **Redis** on **Railway** | Caching Top-K recommendations, session cache, auto-invalidation |
@@ -43,7 +84,7 @@ flowchart LR
     end
 
     subgraph S5["05. Serving (FastAPI on Railway)"]
-        CACHE[("Railway Redis Cache<br/>(Sub-20ms Latency)")]
+        CACHE[("Railway Redis Cache<br/>(Memory fallback)")]
         API["FastAPI App<br/>/recommend/{user_id}"]
         UI["Streamlit UI<br/>'Bạn có thể thích'"]
     end
@@ -104,7 +145,7 @@ RecSys-AI/
 │   │   └── cache.py         # Caching 2 lớp (Railway Redis + Memory fallback)
 │   └── ui/
 │       └── app.py           # Streamlit demo sàn thương mại điện tử
-├── tests/                   # 15/15 Automated Pytest Test Suite
+├── tests/                   # Automated Pytest Test Suite (xem CI để biết số test hiện tại)
 │   ├── test_api.py
 │   ├── test_database.py
 │   ├── test_models.py
@@ -141,7 +182,7 @@ alembic upgrade head
 python -m scripts.ingest_retailrocket
 ```
 
-### 4. Chạy toàn bộ Test Suite (15 tests)
+### 4. Chạy toàn bộ Test Suite
 ```bash
 pytest tests/ -v
 ```
@@ -151,6 +192,14 @@ pytest tests/ -v
 streamlit run src/ui/app.py
 ```
 *(Mở tại [http://localhost:8501](http://localhost:8501))*
+
+> **Local LLM (M1 Pro 16GB, personal, opt-in):** đặt `OLLAMA_URL=http://localhost:11434`
+> (xem `.env.example` mục 6) để shopping agent thử local `qwen2.5:3b`
+> (`num_ctx 4096`, `keep_alive 5m`) trước, rồi mới tới Groq, rồi heuristic.
+> Chạy Ollama với `OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1`.
+> Embedding mặc định vẫn là TF-IDF 64-dim (không vỡ Qdrant);
+> `qwen3-embedding:0.6b` (~400MB) chỉ dùng khi re-index toàn bộ.
+> Không cần thêm dependency — client dùng `httpx` đã có trong `requirements.txt`.
 
 ### 6. Khởi chạy FastAPI Server
 ```bash
@@ -189,3 +238,20 @@ uvicorn src.api.main:app --port 8000 --reload
    - Chạy lệnh `alembic upgrade head` để khởi tạo bảng dữ liệu trên Postgres.
    - Kết nối tới Redis cache.
    - Khởi động FastAPI server tại cổng `$PORT`.
+
+## 🛡️ Serving & Shopping Action Safety (plan 2026-09-18)
+
+- **Immutable model bundle** (`src/serving/model_bundle.py`): production startup
+  load bundle đã checksum (`MODEL_BUNDLE_PATH`, fail-closed khi thiếu/sai);
+  train-on-start chỉ ở development (`RECSYS_TRAIN_ON_START`).
+- **Readiness tách liveness**: `/health/live` (process sống) vs
+  `/health/ready` (503 khi thiếu DB/bundle/cache ở production) — load balancer
+  chỉ route instance ready. Response gắn header `X-Model-Version` +
+  `X-Cache-Source`.
+- **Cart action boundary**: assistant KHÔNG tự nhận đã thêm giỏ hàng khi chưa
+  có acknowledgement từ commerce adapter — không adapter → `PROPOSED`, có
+  adapter → bắt buộc `idempotency_key`.
+- **Admin/mutation auth**: `ADMIN_API_KEY` bảo vệ reload-model; CORS giới hạn
+  `CORS_ORIGINS` (không wildcard+credentials).
+
+Chi tiết giới hạn còn lại: `docs/limitations.md`.

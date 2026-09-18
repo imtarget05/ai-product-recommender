@@ -10,20 +10,34 @@ from sqlalchemy.orm import Session
 
 from src.database.models import Product, Interaction
 from src.agent.groq_client import groq_client
+from src.agent.ollama_client import ollama_client
 from src.agent.rag_search import RAGSearchEngine
+from src.commerce.cart_gateway import (
+    CartActionResult,
+    CartActionStatus,
+    CartGateway,
+    DisabledCartGateway,
+)
 from src.config import settings
 
 class ConversationalShoppingAssistant:
     """Intelligent shopping agent capable of consultation, comparison, and cart action execution."""
 
-    def __init__(self, rag_engine: Optional[RAGSearchEngine] = None):
+    def __init__(
+        self,
+        rag_engine: Optional[RAGSearchEngine] = None,
+        cart_gateway: Optional[CartGateway] = None,
+    ):
         self.rag_engine = rag_engine or RAGSearchEngine()
+        self.cart_gateway = cart_gateway or DisabledCartGateway()
+        self._logged_cart_action_ids: set[str] = set()
 
     def process_chat(
         self,
         messages: List[Dict[str, str]],
         user_id: int,
-        db: Session
+        db: Session,
+        idempotency_key: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Process multi-turn conversation and generate assistant reply with action triggers."""
         start_t = time.time()
@@ -39,19 +53,24 @@ class ConversationalShoppingAssistant:
         cart_action = self._detect_cart_intent(last_user_msg, prod_map)
         suggested_prods = []
 
-        # If cart action detected, record interaction immediately!
+        # Recommendation telemetry is separate from a durable cart acknowledgement.
         if cart_action and cart_action.get("product_id"):
             pid = cart_action["product_id"]
-            db.add(Interaction(user_id=user_id, product_id=pid, event_type="add_to_cart", weight=3.5))
-            db.commit()
             p = prod_map.get(pid)
             title = p.title if p else f"#{pid}"
-            reply = f"🛒 Đã thêm sản phẩm '{title}' vào giỏ hàng của bạn thành công! Bạn có muốn tôi tìm thêm phụ kiện hoặc sản phẩm tương tự không?"
+            action_result = self._submit_cart_action(user_id, pid, idempotency_key)
+            if action_result.status == CartActionStatus.COMPLETED:
+                self._record_completed_cart_interaction(action_result, user_id, db)
+                reply = f"🛒 Đã thêm sản phẩm '{title}' vào giỏ hàng của bạn thành công!"
+            elif action_result.status == CartActionStatus.PROPOSED:
+                reply = f"🛒 Tôi đã chuẩn bị thêm sản phẩm '{title}' vào giỏ hàng. Vui lòng xác nhận trong hệ thống thương mại để hoàn tất."
+            else:
+                reply = f"Tôi chưa thể thêm sản phẩm '{title}' vào giỏ hàng. {action_result.detail}"
             latency = round((time.time() - start_t) * 1000, 2)
             return {
                 "reply": reply,
                 "suggested_products": [self._format_product(p)] if p else [],
-                "action": cart_action,
+                "action": {**cart_action, **self._format_cart_action_result(action_result)},
                 "latency_ms": latency
             }
 
@@ -82,7 +101,16 @@ class ConversationalShoppingAssistant:
             })
 
         reply_content = None
-        if groq_client.is_available():
+        # M1 local plan: Ollama (qwen2.5:3b) first when OLLAMA_URL is set,
+        # then Groq, then heuristic fallback.
+        if ollama_client.is_available():
+            reply_content = ollama_client.chat_completion(
+                messages=llm_messages,
+                model=settings.OLLAMA_CHAT_MODEL,
+                temperature=0.3,
+                max_tokens=350
+            )
+        if not reply_content and groq_client.is_available():
             reply_content = groq_client.chat_completion(
                 messages=llm_messages,
                 model=settings.GROQ_CHAT_MODEL,
@@ -134,6 +162,47 @@ class ConversationalShoppingAssistant:
                     }
 
         return None
+
+    def _submit_cart_action(
+        self,
+        user_id: int,
+        product_id: int,
+        idempotency_key: Optional[str],
+    ) -> CartActionResult:
+        if getattr(self.cart_gateway, "requires_idempotency_key", True) and not idempotency_key:
+            return CartActionResult(
+                status=CartActionStatus.FAILED,
+                action_id=None,
+                product_id=product_id,
+                detail="An idempotency key is required for configured cart actions.",
+            )
+        return self.cart_gateway.add_item(user_id, product_id, idempotency_key or "proposal")
+
+    def _record_completed_cart_interaction(
+        self,
+        action_result: CartActionResult,
+        user_id: int,
+        db: Session,
+    ) -> None:
+        if not action_result.action_id or action_result.action_id in self._logged_cart_action_ids:
+            return
+        db.add(Interaction(
+            user_id=user_id,
+            product_id=action_result.product_id,
+            event_type="add_to_cart",
+            weight=3.5,
+        ))
+        db.commit()
+        self._logged_cart_action_ids.add(action_result.action_id)
+
+    @staticmethod
+    def _format_cart_action_result(result: CartActionResult) -> Dict[str, Any]:
+        return {
+            "status": result.status.value,
+            "action_id": result.action_id,
+            "product_id": result.product_id,
+            "detail": result.detail,
+        }
 
     def _format_product(self, p: Product) -> Dict[str, Any]:
         """Convert Product DB instance to standard recommendation dict."""

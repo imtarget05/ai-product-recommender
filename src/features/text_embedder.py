@@ -106,6 +106,69 @@ class TfIdfSvdEmbedder(EmbeddingProvider):
             dense_vec = dense_vec / norm
         return dense_vec[0]
 
+class OllamaEmbedder(EmbeddingProvider):
+    """Optional Ollama embedding provider (opt-in, NOT the default).
+
+    M1 Pro 16GB plan 2026-09-18: default stays TfIdfSvdEmbedder 64-dim so
+    Qdrant vectors never break. Set the embed model to qwen3-embedding:0.6b
+    (~400MB, Vietnamese upgrade) ONLY together with a full re-index
+    (VECTOR_DIMENSION + Qdrant collection must change too).
+    Uses httpx (already in requirements) — POST /api/embed.
+    """
+
+    def __init__(self, model: Optional[str] = None, embedding_dim: int = 64):
+        self.model = model or settings.OLLAMA_EMBED_MODEL
+        self.embedding_dim = embedding_dim
+        self.vectorizer: Optional[TfidfVectorizer] = None
+        self.svd: Optional[TruncatedSVD] = None
+        # Fallback keeps single-transform working offline.
+        self._fallback = TfIdfSvdEmbedder(embedding_dim=embedding_dim)
+
+    @property
+    def _base_url(self) -> str:
+        return (settings.OLLAMA_URL or "").rstrip("/")
+
+    def _embed_texts(self, texts: List[str]) -> Optional[np.ndarray]:
+        if not self._base_url or not texts:
+            return None
+        try:
+            import httpx as _httpx
+            resp = _httpx.post(
+                f"{self._base_url}/api/embed",
+                json={"model": self.model, "input": texts, "keep_alive": "5m"},
+                timeout=60.0,
+            )
+            resp.raise_for_status()
+            vecs = (resp.json().get("embeddings") or [])
+            if not vecs:
+                return None
+            arr = np.array(vecs, dtype=np.float32)
+            if arr.shape[1] != self.embedding_dim:
+                if arr.shape[1] > self.embedding_dim:
+                    arr = arr[:, :self.embedding_dim]
+                else:
+                    arr = np.pad(arr, ((0, 0), (0, self.embedding_dim - arr.shape[1])))
+            norms = np.linalg.norm(arr, axis=1, keepdims=True)
+            norms[norms == 0.0] = 1.0
+            return arr / norms
+        except Exception:
+            return None
+
+    def fit_transform(self, products: List[Product]) -> np.ndarray:
+        texts = [TfIdfSvdEmbedder._prepare_text(self, p) for p in products] \
+            if products else []
+        vecs = self._embed_texts(texts) if texts else None
+        if vecs is not None:
+            return vecs
+        return self._fallback.fit_transform(products)
+
+    def transform_single(self, product: Product) -> np.ndarray:
+        vecs = self._embed_texts([self._fallback._prepare_text(product)])
+        if vecs is not None:
+            return vecs[0]
+        return self._fallback.transform_single(product)
+
+
 class ItemEmbedder:
     """Computes and stores dense vector representations for product catalog items."""
 
@@ -130,7 +193,28 @@ class ItemEmbedder:
     def transform_single(self, product: Product) -> np.ndarray:
         return self.provider.transform_single(product)
 
-    def save(self, output_dir: Optional[Path] = None):
+    def save(self, output_dir: Optional[Path] = None, storage=None):
+        # WP4: storage-backed persist (local/s3mock/r2) — artifact đi qua
+        # storage interface, không path cứng local.
+        if storage is not None:
+            import io
+
+            matrix_buf = io.BytesIO()
+            np.save(matrix_buf, self.embeddings)
+            storage.save("item_embeddings.npy", matrix_buf.getvalue())
+
+            meta_buf = io.BytesIO()
+            pickle.dump({
+                "product_ids": self.product_ids,
+                "id_to_idx": self.id_to_idx,
+                "idx_to_id": self.idx_to_id,
+                "vectorizer": self.provider.vectorizer,
+                "svd": self.provider.svd,
+                "embedding_dim": self.embedding_dim
+            }, meta_buf)
+            storage.save("item_embedder_meta.pkl", meta_buf.getvalue())
+            return
+
         target_dir = output_dir or settings.EMBEDDINGS_DIR
         os.makedirs(target_dir, exist_ok=True)
         matrix_path = target_dir / "item_embeddings.npy"
@@ -146,7 +230,26 @@ class ItemEmbedder:
                 "embedding_dim": self.embedding_dim
             }, f)
 
-    def load(self, output_dir: Optional[Path] = None) -> bool:
+    def load(self, output_dir: Optional[Path] = None, storage=None) -> bool:
+        # WP4: storage-backed load (backcompat: giữ nguyên signature cũ).
+        if storage is not None:
+            import io
+
+            try:
+                if not storage.exists("item_embeddings.npy") or not storage.exists("item_embedder_meta.pkl"):
+                    return False
+                self.embeddings = np.load(io.BytesIO(storage.load("item_embeddings.npy")))
+                meta = pickle.load(io.BytesIO(storage.load("item_embedder_meta.pkl")))
+                self.product_ids = meta["product_ids"]
+                self.id_to_idx = meta["id_to_idx"]
+                self.idx_to_id = meta["idx_to_id"]
+                self.provider.vectorizer = meta["vectorizer"]
+                self.provider.svd = meta["svd"]
+                self.embedding_dim = meta["embedding_dim"]
+                return True
+            except Exception:
+                return False
+
         target_dir = output_dir or settings.EMBEDDINGS_DIR
         matrix_path = target_dir / "item_embeddings.npy"
         meta_path = target_dir / "item_embedder_meta.pkl"

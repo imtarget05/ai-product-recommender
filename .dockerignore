@@ -1,0 +1,35 @@
+# VCS & CI
+.git
+.github
+
+# Python
+__pycache__
+**/__pycache__
+*.pyc
+.venv
+venv
+.pytest_cache
+.coverage
+htmlcov
+
+# Environment & secrets
+.env
+.env.local
+
+# Data (seed script regenerates at build time)
+data
+
+# IDE & local
+.vscode
+.idea
+.DS_Store
+.kilo
+.kilocode
+.claude
+.codegraph
+
+# Docs not needed in image
+docs
+README.md
+AGENTS.md
+CLAUDE.md

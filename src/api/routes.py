@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 from datetime import datetime
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Response, Request
 from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func, text
@@ -27,16 +27,93 @@ from src.api.schemas import (
 from src.api.cache import cache_manager
 from src.ranking.reranker import ProductReranker
 from src.config import settings
+from src.storage.factory import get_storage
 
 router = APIRouter(prefix="/api/v1")
+
+
+def _storage_load_artifact(key: str):
+    """WP4: đọc artifact qua storage interface — không đọc path cứng local.
+
+    Trả về bytes nếu artifact tồn tại, ngược lại None (route flow không đổi).
+    """
+    store = get_storage()
+    if store.exists(key):
+        return store.load(key)
+    return None
 
 # Global singleton state loaded during startup
 app_state = {
     "hybrid_model": None,
     "product_dict": {},
     "reranker": ProductReranker(),
-    "ready": False
+    "ready": False,
+    "model_bundle": None,
+    "model_bundle_error": None,
 }
+
+
+@router.get("/health/live")
+def health_live():
+    """Liveness: process is running (load balancers must not use this alone)."""
+    return {"status": "alive"}
+
+
+@router.get("/health/ready")
+def health_ready():
+    """Readiness: DB + bundle + cache ready; only ready instances serve traffic."""
+    import os as _os
+
+    from src.database.session import check_db_health
+
+    db_ok = check_db_health()
+    bundle = app_state.get("model_bundle")
+    bundle_err = app_state.get("model_bundle_error")
+    env = _os.environ.get("APP_ENV", _os.environ.get("ENVIRONMENT", "development")).lower()
+    cache_mode = _os.environ.get("CACHE_MODE", "auto").lower()
+    cache_ok = True
+    cache_detail = "in-memory"
+    try:
+        from src.api.cache import cache_manager as _cm
+
+        if _cm.redis_client is not None:
+            cache_detail = "redis"
+        elif env == "production" and cache_mode == "redis":
+            cache_ok = False
+            cache_detail = "redis-required-in-production"
+    except Exception:
+        if env == "production" and cache_mode == "redis":
+            cache_ok = False
+    ready = bool(db_ok and bundle is not None and cache_ok)
+    if not ready:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(status_code=503, content={
+            "ready": False,
+            "db_connected": db_ok,
+            "bundle_loaded": bundle is not None,
+            "bundle_error": str(bundle_err) if bundle_err else None,
+            "cache": cache_detail,
+        })
+    return {
+        "ready": True,
+        "db_connected": db_ok,
+        "bundle_version": getattr(bundle, "version", "unknown"),
+        "cache": cache_detail,
+    }
+
+
+@router.get("/model/info")
+def model_info():
+    """Immutable serving bundle identity (version + fingerprint)."""
+    bundle = app_state.get("model_bundle")
+    if bundle is None:
+        raise HTTPException(status_code=503, detail="MODEL_BUNDLE_UNAVAILABLE")
+    return {
+        "version": bundle.version,
+        "dataset_fingerprint": bundle.dataset_fingerprint,
+        "schema": bundle.schema,
+    }
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -75,6 +152,7 @@ def health_check(
 
 @router.get("/recommend/{user_id}", response_model=RecommendationResponse)
 def get_recommendations(
+    response: Response,
     user_id: int = Path(..., ge=1, description="ID của người dùng"),
     top_k: int = Query(default=10, ge=1, le=50),
     strategy: str = Query(default="hybrid", pattern="^(hybrid|collaborative|content_based|popularity)$"),
@@ -93,6 +171,15 @@ def get_recommendations(
 
     if not app_state["ready"] or not app_state["hybrid_model"]:
         raise HTTPException(status_code=503, detail="Models are still initializing. Please retry in a few seconds.")
+
+    _bundle = app_state.get("model_bundle")
+    response.headers["X-Model-Version"] = getattr(_bundle, "version", "train-on-start")
+    try:
+        from src.api.cache import cache_manager as _cm
+
+        response.headers["X-Cache-Source"] = "redis" if _cm.redis_client is not None else "memory"
+    except Exception:
+        response.headers["X-Cache-Source"] = "unknown"
 
     # Check cache first using O(1) User Versioning
     if not bypass_cache:
@@ -166,6 +253,7 @@ def get_recommendations(
         "strategy": strategy,
         "cached": False,
         "latency_ms": latency,
+        "model_version": getattr(_bundle, "version", "train-on-start"),
         "recommendations": [item.model_dump() for item in recommended_items]
     }
 
@@ -289,7 +377,25 @@ def _store_interact_idempotency(db: Session, idem_key: str, body: dict) -> None:
     db.commit()
 
 
-@router.post("/admin/reload-model", response_model=AdminReloadResponse)
+def _require_admin_key():
+    """Deployment-provided auth for state-changing/admin endpoints."""
+    import os as _os
+
+    from fastapi import Header, HTTPException as _HTTP
+
+    async def _dep(x_api_key: str | None = Header(default=None)):
+        expected = _os.environ.get("ADMIN_API_KEY", "").strip()
+        if not expected:
+            return True
+        if x_api_key != expected:
+            raise _HTTP(status_code=401, detail="Invalid admin API key")
+        return True
+
+    return _dep
+
+
+@router.post("/admin/reload-model", response_model=AdminReloadResponse,
+             dependencies=[Depends(_require_admin_key())])
 def reload_model(db: Session = Depends(get_db)):
     """Hot-reload recommendation models from database without server downtime."""
     if not app_state["hybrid_model"]:

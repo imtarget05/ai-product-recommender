@@ -11,11 +11,32 @@ from src.api.agent_routes import router as agent_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan event handler: Initializes DB and pretrains/loads RecSys models."""
-    print("🚀 Initializing RecSys-AI Database & Models...")
+    """Lifespan: production loads immutable bundle; dev may train-on-start."""
+    import os as _os
+
+    print("Initializing RecSys-AI Database & Models...")
     init_db()
 
-    # Load data and fit recommendation models
+    env = _os.environ.get("APP_ENV", _os.environ.get("ENVIRONMENT", "development")).lower()
+    bundle_path = _os.environ.get("MODEL_BUNDLE_PATH", "data/model_bundle")
+    explicit_dev = _os.environ.get("RECSYS_TRAIN_ON_START", "").lower() in ("1", "true", "yes")
+    if env == "production":
+        from src.serving.model_bundle import BundleError, load_model_bundle
+
+        try:
+            bundle = load_model_bundle(bundle_path)
+        except BundleError as exc:
+            app_state["model_bundle_error"] = str(exc)
+            raise RuntimeError(f"MODEL_BUNDLE_INVALID: {exc}") from exc
+        app_state["model_bundle"] = bundle
+        print(f"Serving bundle {bundle.version} loaded ({bundle.dataset_fingerprint[:12]}).")
+
+    # Load data and fit recommendation models (dev train-on-start only;
+    # production serves the immutable bundle above, never process-local fit).
+    if env == "production" and not explicit_dev:
+        print("Production serving bundle mode: skipping train-on-start fit.")
+        yield
+        return
     db = SessionLocal()
     try:
         products = db.query(Product).all()
@@ -59,11 +80,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
-    # Enable CORS for frontend and Streamlit
+    # Enable CORS for frontend and Streamlit (never wildcard+credentials).
+    import os as _cors_os
+
+    _raw = _cors_os.environ.get("CORS_ORIGINS", "").strip()
+    _origins = [o.strip() for o in _raw.split(",") if o.strip()] or ["http://localhost:3000"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=_origins,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

@@ -28,6 +28,7 @@ streamlit>=1.32.0
 # Utilities & Testing
 python-dotenv>=1.0.1
 pytest>=8.0.0
+testcontainers[qdrant,redis]>=4.0.0
 requests>=2.31.0
 tqdm>=4.66.0
 

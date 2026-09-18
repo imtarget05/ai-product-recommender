@@ -1,0 +1,45 @@
+# RecSys-AI — deploy on Render (free tier, Docker runtime)
+# Dashboard: https://dashboard.render.com → New → Web Service → connect this repo.
+# Runtime     : docker (./docker/Dockerfile, context repo root)
+# Health check: /api/v1/health/live (readiness at /api/v1/health/ready)
+# Env vars    : secrets marked sync:false — fill in the Render dashboard,
+#               never commit real values. See .env.example for the full list.
+# Infra chốt  : Postgres → Neon (DATABASE_URL), object store → R2 (S3-compatible),
+#               vector → Qdrant Cloud (QDRANT_URL), cache → Redis managed.
+# After deploy, verify: GET <url>/api/v1/health/live, GET <url>/api/v1/health/ready
+# Rollback: redeploy the previous commit in the Render dashboard.
+services:
+  - type: web
+    name: recsys-ai-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./docker/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health/live
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: staging
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        value: 8000
+      - key: TOP_K_DEFAULT
+        value: "10"
+      # Secrets below are sync:false → set real values in Render dashboard.
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: R2_ENDPOINT
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false

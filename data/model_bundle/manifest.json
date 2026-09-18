@@ -1,0 +1,26 @@
+{
+  "version": "recsys-hybrid-v001",
+  "dataset_fingerprint": "baa4107b931457dfc7d1fb70019769cf5ceff3456a4818b137b4ddad3e5587dc",
+  "schema": {
+    "recommendation_fields": [
+      "product_id",
+      "score",
+      "model",
+      "reason"
+    ],
+    "strategies": [
+      "hybrid",
+      "collaborative",
+      "content_based",
+      "popularity"
+    ],
+    "hybrid_weights": {
+      "cf": 0.6,
+      "cb": 0.4
+    }
+  },
+  "checksums": {
+    "evaluation_report.json": "47c89d5e84c7e5c131a2a863d9198562ce2deb4017c34700c3e305d114302da8",
+    "serving_payload.json": "c16a46295014cba3954557827558f18339a7422dc119619bca6bb748b18cf1d4"
+  }
+}

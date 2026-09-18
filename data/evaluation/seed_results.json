@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "generated_at_utc": "2026-09-16T18:07:52.763648+00:00",
+  "dataset": {
+    "label": "Synthetic seed snapshot; not RetailRocket",
+    "sha256": "9b13e5ea3345ca270ea2c9182f36143d87ea4a988fce5dbbe16357d9f8ec4a65",
+    "products": 31,
+    "interactions": 4061,
+    "train_events": 3249,
+    "test_events": 812,
+    "evaluated_users": 128
+  },
+  "protocol": {
+    "top_k": 5,
+    "requested_test_ratio": 0.2,
+    "cutoff_timestamp": "2026-09-10T14:11:24.279855",
+    "split": "train <= cutoff; test > cutoff; timestamp ties stay in train",
+    "positives": "click, add_to_cart, purchase, or rating >= 4",
+    "exclude_interacted": true,
+    "content_backend": "local embeddings; no Qdrant store supplied",
+    "cf_factors": 16,
+    "hybrid_cf_factors": 32,
+    "hybrid_weights": {
+      "cf": 0.6,
+      "cb": 0.4
+    }
+  },
+  "environment": {
+    "python": "3.11.15",
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "packages": {
+      "numpy": "1.26.4",
+      "scipy": "1.17.1",
+      "scikit-learn": "1.9.1",
+      "sqlalchemy": "2.0.54"
+    }
+  },
+  "limitations": [
+    "Local snapshot provenance is not independently verified; not a RetailRocket benchmark.",
+    "Catalog metadata/ratings are current, not cutoff snapshots; future leakage remains possible.",
+    "Reranker freshness uses wall-clock time, not the historical cutoff.",
+    "Repeated train items remain in test relevance although recommendations exclude them.",
+    "Pipeline does not pass purchase history to reranker; not identical to API serving.",
+    "Binary metrics only; graded-NDCG helper is not wired into this evaluation.",
+    "Standalone CF uses 16 factors; Hybrid uses configured factors; not a controlled ablation."
+  ],
+  "results": {
+    "PopularityBaseline": {
+      "Precision@5": 0.0312,
+      "Recall@5": 0.0678,
+      "HitRate@5": 0.1484,
+      "NDCG@5": 0.0519,
+      "MAP@5": 0.0336,
+      "CatalogCoverage": 0.5161,
+      "EvaluatedUsers": 128
+    },
+    "ContentBased": {
+      "Precision@5": 0.0437,
+      "Recall@5": 0.0778,
+      "HitRate@5": 0.2109,
+      "NDCG@5": 0.0774,
+      "MAP@5": 0.0522,
+      "CatalogCoverage": 0.9355,
+      "EvaluatedUsers": 128
+    },
+    "CollaborativeFiltering": {
+      "Precision@5": 0.0359,
+      "Recall@5": 0.0531,
+      "HitRate@5": 0.1484,
+      "NDCG@5": 0.0471,
+      "MAP@5": 0.0282,
+      "CatalogCoverage": 1.0,
+      "EvaluatedUsers": 128
+    },
+    "HybridRecommender": {
+      "Precision@5": 0.0359,
+      "Recall@5": 0.0652,
+      "HitRate@5": 0.1797,
+      "NDCG@5": 0.0538,
+      "MAP@5": 0.0318,
+      "CatalogCoverage": 0.9032,
+      "EvaluatedUsers": 128
+    },
+    "Pipeline (Hybrid + Reranker)": {
+      "Precision@5": 0.0359,
+      "Recall@5": 0.0628,
+      "HitRate@5": 0.1797,
+      "NDCG@5": 0.0509,
+      "MAP@5": 0.0299,
+      "CatalogCoverage": 0.9032,
+      "EvaluatedUsers": 128
+    }
+  }
+}

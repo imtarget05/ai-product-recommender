@@ -52,6 +52,22 @@ class Settings(BaseSettings):
     GROQ_FAST_MODEL: str = "llama-3.1-8b-instant"
     GROQ_TIMEOUT_SECONDS: float = 4.0
 
+    # Commerce integration stays disabled unless an adapter is supplied at app wiring.
+    # The assistant returns a cart proposal while this remains unset.
+    CART_GATEWAY_URL: Optional[str] = None
+
+    # Local Ollama (M1 Pro 16GB plan 2026-09-18, opt-in): when OLLAMA_URL is
+    # set (e.g. http://localhost:11434) the shopping agent tries local
+    # qwen2.5:3b first (num_ctx 4096) and falls back to Groq, then to the
+    # heuristic template reply. Unset → Groq-only behaviour (unchanged).
+    OLLAMA_URL: Optional[str] = None
+    OLLAMA_CHAT_MODEL: str = "qwen2.5:3b"
+    OLLAMA_NUM_CTX: int = 4096
+    OLLAMA_TIMEOUT_SECONDS: float = 60.0
+    # Optional Vietnamese embedding upgrade (qwen3-embedding:0.6b, ~400MB).
+    # TF-IDF 64-dim stays the default so Qdrant vectors never break.
+    OLLAMA_EMBED_MODEL: str = "nomic-embed-text"
+
 
     # Recommendation Hyperparameters
 

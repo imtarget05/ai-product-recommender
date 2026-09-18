@@ -11,6 +11,7 @@ from src.agent.groq_client import GroqClientManager, groq_client
 from src.agent.rag_search import RAGSearchEngine
 from src.agent.explainer import DynamicExplainer
 from src.agent.shopping_agent import ConversationalShoppingAssistant
+from src.commerce.cart_gateway import DisabledCartGateway, InMemoryCartGateway
 
 
 @pytest.fixture(scope="module")
@@ -105,32 +106,76 @@ def test_dynamic_explainer(db_session: Session):
     assert len(explanation.strip()) > 5
 
 
-def test_shopping_assistant_cart_action(db_session: Session):
-    """Verify shopping assistant detects cart actions and records interaction in DB."""
-    assistant = ConversationalShoppingAssistant()
+def test_shopping_assistant_unconfigured_cart_action_is_a_proposal(db_session: Session):
+    """A missing commerce adapter must not be presented as a completed cart update."""
+    assistant = ConversationalShoppingAssistant(cart_gateway=DisabledCartGateway())
     sample_product = db_session.query(Product).first()
     assert sample_product is not None
+    user_id = 999
 
     messages = [
         {"role": "user", "content": f"Tôi muốn thêm sản phẩm #{sample_product.id} vào giỏ hàng"}
     ]
 
-    res = assistant.process_chat(messages, user_id=999, db=db_session)
+    res = assistant.process_chat(messages, user_id=user_id, db=db_session)
     assert "reply" in res
     assert res.get("action") is not None
     assert res["action"]["type"] == "add_to_cart"
     assert res["action"]["product_id"] == sample_product.id
+    assert res["action"]["status"] == "PROPOSED"
+    assert "thành công" not in res["reply"].lower()
 
-    # Verify interaction recorded in database
+    # A recommendation event is not evidence that a cart was mutated.
     recorded = (
         db_session.query(Interaction)
-        .filter(Interaction.user_id == 999, Interaction.product_id == sample_product.id, Interaction.event_type == "add_to_cart")
+        .filter(Interaction.user_id == user_id, Interaction.product_id == sample_product.id, Interaction.event_type == "add_to_cart")
         .first()
     )
-    assert recorded is not None
-    # Cleanup test interaction
-    db_session.delete(recorded)
+    assert recorded is None
+
+
+def test_shopping_assistant_records_acknowledged_cart_action_once_per_idempotency_key(db_session: Session):
+    """An acknowledged gateway completion is logged once even when the request is retried."""
+    gateway = InMemoryCartGateway()
+    assistant = ConversationalShoppingAssistant(cart_gateway=gateway)
+    sample_product = db_session.query(Product).first()
+    assert sample_product is not None
+    user_id = 998
+    messages = [{"role": "user", "content": f"Tôi muốn thêm sản phẩm #{sample_product.id} vào giỏ hàng"}]
+
+    first = assistant.process_chat(messages, user_id=user_id, db=db_session, idempotency_key="cart-request-998")
+    second = assistant.process_chat(messages, user_id=user_id, db=db_session, idempotency_key="cart-request-998")
+
+    assert first["action"]["status"] == "COMPLETED"
+    assert second["action"]["status"] == "COMPLETED"
+    assert first["action"]["action_id"] == second["action"]["action_id"]
+    assert len(gateway.actions) == 1
+    assert (
+        db_session.query(Interaction)
+        .filter(Interaction.user_id == user_id, Interaction.product_id == sample_product.id, Interaction.event_type == "add_to_cart")
+        .count()
+        == 1
+    )
+    db_session.query(Interaction).filter(
+        Interaction.user_id == user_id,
+        Interaction.product_id == sample_product.id,
+        Interaction.event_type == "add_to_cart",
+    ).delete()
     db_session.commit()
+
+
+def test_shopping_assistant_requires_idempotency_key_for_configured_cart_gateway(db_session: Session):
+    """Configured cart writes without a client key are rejected rather than guessed."""
+    assistant = ConversationalShoppingAssistant(cart_gateway=InMemoryCartGateway())
+    sample_product = db_session.query(Product).first()
+    assert sample_product is not None
+    result = assistant.process_chat(
+        [{"role": "user", "content": f"Thêm sản phẩm #{sample_product.id} vào giỏ hàng"}],
+        user_id=997,
+        db=db_session,
+    )
+    assert result["action"]["status"] == "FAILED"
+    assert "idempotency" in result["action"]["detail"].lower()
 
 
 def test_agent_api_status(client):

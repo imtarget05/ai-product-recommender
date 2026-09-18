@@ -33,6 +33,7 @@ class RecommendationResponse(BaseModel):
     strategy: str
     cached: bool = False
     latency_ms: float
+    model_version: Optional[str] = None
     recommendations: List[RecommendedProduct]
 
 class InteractionCreate(BaseModel):
@@ -106,6 +107,8 @@ class ChatMessage(BaseModel):
 
 class AgentAction(BaseModel):
     type: str = Field(..., description="Loại hành động: add_to_cart, search, compare...")
+    status: Optional[str] = Field(None, description="Trạng thái commerce: PROPOSED, COMPLETED, FAILED")
+    action_id: Optional[str] = None
     product_id: Optional[int] = None
     product_title: Optional[str] = None
     detail: Optional[str] = None
@@ -114,6 +117,7 @@ class AgentAction(BaseModel):
 class AgentChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(..., min_length=1, description="Lịch sử các lượt chat")
     user_id: int = Field(default=1, ge=1, description="ID người dùng đang tương tác")
+    idempotency_key: Optional[str] = Field(None, min_length=1, max_length=255)
 
 
 class AgentChatResponse(BaseModel):
@@ -133,5 +137,4 @@ class AgentExplainResponse(BaseModel):
     product_id: int
     user_id: Optional[int] = None
     explanation: str
-
 

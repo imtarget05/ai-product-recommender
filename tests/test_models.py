@@ -79,3 +79,62 @@ def test_hybrid_recommender_established_and_cold_start(mock_data):
     recs_cold = hybrid.recommend(user_id=999, top_k=3)
     assert len(recs_cold) == 3
     assert "Cold-start" in recs_cold[0]["model"]
+
+
+# ---------------------------------------------------------------------------
+# Immutable serving bundle contract (plan 2026-09-18 Task 2)
+# ---------------------------------------------------------------------------
+def test_model_bundle_round_trip_and_missing_manifest_fails(tmp_path):
+    """A written bundle loads with its version/fingerprint; a missing manifest fails closed."""
+    import pytest
+
+    from src.serving.model_bundle import BundleError, load_model_bundle, write_model_bundle
+
+    dest = tmp_path / "bundle"
+    bundle = write_model_bundle(
+        dest=dest,
+        version="test-v1",
+        dataset_fingerprint="f" * 64,
+        schema={"strategies": ["hybrid"]},
+        artifacts={"evaluation_report.json": b'{"ok": true}'},
+    )
+    assert bundle.version == "test-v1"
+    assert bundle.dataset_fingerprint == "f" * 64
+    assert "evaluation_report.json" in bundle.checksums
+
+    with pytest.raises(BundleError, match="missing or invalid bundle manifest"):
+        load_model_bundle(tmp_path / "absent")
+
+
+def test_model_bundle_checksum_mismatch_is_rejected(tmp_path):
+    """An edited artifact must not be served as the approved bundle."""
+    import pytest
+
+    from src.serving.model_bundle import BundleError, load_model_bundle, write_model_bundle
+
+    dest = tmp_path / "bundle"
+    write_model_bundle(
+        dest=dest,
+        version="test-v2",
+        dataset_fingerprint="a" * 64,
+        schema={},
+        artifacts={"evaluation_report.json": b'{"ok": true}'},
+    )
+    (dest / "evaluation_report.json").write_bytes(b'{"ok": false}')
+    with pytest.raises(BundleError, match="checksum mismatch"):
+        load_model_bundle(dest)
+
+
+def test_model_bundle_requires_schema_and_fingerprint_fields(tmp_path):
+    """A manifest missing required serving-contract keys is refused."""
+    import json
+
+    import pytest
+
+    from src.serving.model_bundle import BundleError, load_model_bundle
+
+    dest = tmp_path / "bad"
+    dest.mkdir()
+    (dest / "manifest.json").write_text(json.dumps({"version": "x", "checksums": {}}))
+    with pytest.raises(BundleError, match="dataset_fingerprint"):
+        load_model_bundle(dest)

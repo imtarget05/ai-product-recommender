@@ -48,6 +48,19 @@ data/embeddings/*
 .coverage
 htmlcov/
 
+# P1 artefact hygiene (runtime, never commit)
+*.pkl
+*.pkl.tmp-*
+*.tmp
+*.temp
+*.log
+tmp/
+temp/
+logs/
+data/**/*.db
+data/**/*.pkl
+data/**/*.tmp
+
 # Local & Internal
 AGENTS.md
 CLAUDE.md
