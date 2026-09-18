@@ -23,6 +23,7 @@ COPY scripts/ ./scripts/
 COPY alembic/ ./alembic/
 COPY alembic.ini .
 COPY pytest.ini .
+COPY .env.example .
 
 # ---- Test gate at build time ----
 # Seed the demo dataset (SQLite fallback, fully offline) and run the full
