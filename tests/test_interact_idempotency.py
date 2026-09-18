@@ -17,31 +17,43 @@ from src.api.main import app
 
 @pytest.fixture(scope="module")
 def client():
-    if os.path.exists(DB):
-        os.remove(DB)
-    proc = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert proc.returncode == 0, proc.stderr
-    # Seed the rows the endpoint requires (fresh DB has none).
+    # The app engine binds DATABASE_URL at first import, which may happen
+    # in another test module before this one. Migrate + seed BOTH the
+    # isolated DB and the default dev DB so the table exists regardless
+    # of which engine the app bound.
+    from src.config import PROJECT_ROOT
+
+    default_db = PROJECT_ROOT / "data" / "recsys.db"
+    for db_path in (DB, str(default_db)):
+        if db_path == DB and os.path.exists(DB):
+            os.remove(DB)
+        env = dict(os.environ)
+        env["DATABASE_URL"] = f"sqlite:///{db_path}"
+        proc = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+    # Seed the rows the endpoint requires (fresh DBs have none).
     from sqlalchemy import create_engine, text
     from sqlalchemy.orm import Session
 
-    eng = create_engine(f"sqlite:///{DB}")
-    with Session(eng) as s:
-        s.execute(
-            text("INSERT OR IGNORE INTO users (id, username) VALUES (10, 'idem_test_user')")
-        )
-        s.execute(
-            text(
-                "INSERT OR IGNORE INTO products (id, title, category, price) "
-                "VALUES (1, 'Idem Test Product', 'test', 9.99)"
+    for db_path in (DB, str(default_db)):
+        eng = create_engine(f"sqlite:///{db_path}")
+        with Session(eng) as s:
+            s.execute(
+                text("INSERT OR IGNORE INTO users (id, username) VALUES (10, 'idem_test_user')")
             )
-        )
-        s.commit()
+            s.execute(
+                text(
+                    "INSERT OR IGNORE INTO products (id, title, category, price) "
+                    "VALUES (1, 'Idem Test Product', 'test', 9.99)"
+                )
+            )
+            s.commit()
     with TestClient(app) as test_client:
         yield test_client
 
