@@ -72,6 +72,19 @@ def create_app() -> FastAPI:
     app.include_router(api_router)
     app.include_router(agent_router)
 
+    # Request counter for /metrics (excludes the metrics scrape itself).
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from src.api.routes import bump_request_count
+
+    class _MetricsMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request, call_next):
+            response = await call_next(request)
+            if request.url.path != "/api/v1/metrics":
+                bump_request_count()
+            return response
+
+    app.add_middleware(_MetricsMiddleware)
+
     @app.get("/")
     def root():
         return {

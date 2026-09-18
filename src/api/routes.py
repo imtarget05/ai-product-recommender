@@ -1,4 +1,5 @@
 """FastAPI Route Handlers for Recommendation System Serving."""
+import os
 import time
 import logging
 
@@ -7,6 +8,7 @@ logger = logging.getLogger(__name__)
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
@@ -317,4 +319,33 @@ def list_users(
         )
         for u in users
     ]
+
+
+# In-process request counter bumped by middleware in src/api/main.py.
+http_requests_total = 0
+
+
+def bump_request_count() -> None:
+    global http_requests_total
+    http_requests_total += 1
+
+
+@router.get("/metrics", response_class=PlainTextResponse)
+def metrics():
+    """Prometheus-text minimal series.
+
+    queue_depth/dlq_count report 0 until Plan 03 wires the durable
+    DB queue; the series names exist now so dashboards stay stable.
+    """
+    bundle = app_state.get("model_bundle")
+    version = getattr(bundle, "version", None) or os.environ.get(
+        "MODEL_VERSION", "train-on-start"
+    )
+    lines = [
+        f'model_version{{version="{version}"}} 1',
+        f"http_requests_total {http_requests_total}",
+        "queue_depth 0",
+        "dlq_count 0",
+    ]
+    return "\n".join(lines) + "\n"
 
