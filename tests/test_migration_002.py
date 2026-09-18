@@ -6,6 +6,7 @@ so in-process overrides cannot isolate the test database.
 """
 import os
 import subprocess
+import sys
 
 from sqlalchemy import create_engine, inspect
 
@@ -30,7 +31,7 @@ def _env(fresh=False):
 
 def _run(*args, fresh=False):
     return subprocess.run(
-        [".venv/bin/python", "-m", "alembic", *args],
+        [sys.executable, "-m", "alembic", *args],
         capture_output=True,
         text=True,
         env=_env(fresh),
