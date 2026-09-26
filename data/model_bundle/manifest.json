@@ -1,6 +1,6 @@
 {
   "version": "recsys-hybrid-v001",
-  "dataset_fingerprint": "baa4107b931457dfc7d1fb70019769cf5ceff3456a4818b137b4ddad3e5587dc",
+  "dataset_fingerprint": "b10810a957cf2f1b16e7f313dfe566476fa2cd0085b9bc8c667016dd917eaaa0",
   "schema": {
     "recommendation_fields": [
       "product_id",
@@ -20,7 +20,7 @@
     }
   },
   "checksums": {
-    "evaluation_report.json": "47c89d5e84c7e5c131a2a863d9198562ce2deb4017c34700c3e305d114302da8",
+    "evaluation_report.json": "b9b0e12015943bc8fe02f42ad38a27b79435b742a48ef5c8320f223a40885770",
     "serving_payload.json": "c16a46295014cba3954557827558f18339a7422dc119619bca6bb748b18cf1d4"
   }
 }

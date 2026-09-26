@@ -7,10 +7,14 @@ so in-process overrides cannot isolate the test database.
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 from sqlalchemy import create_engine, inspect
 
-DB = "/tmp/recsys_mig002_test.db"
+# tempfile.gettempdir() rather than a hardcoded /tmp: on Windows "/tmp" is not
+# guaranteed to exist and does not match the directory the OS actually uses.
+DB = str(Path(tempfile.gettempdir()) / "recsys_mig002_test.db")
 TABLES = (
     "idempotency_keys",
     "jobs",
@@ -40,7 +44,14 @@ def _run(*args, fresh=False):
 
 
 def _names():
-    return set(inspect(create_engine(f"sqlite:///{DB}")).get_table_names())
+    # The engine must be disposed: an undisposed engine keeps the SQLite file
+    # handle open, and the next test's os.remove(DB) then fails with
+    # PermissionError on Windows (POSIX allows unlinking an open file).
+    engine = create_engine(f"sqlite:///{DB}")
+    try:
+        return set(inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
 
 
 def test_upgrade_creates_tables():

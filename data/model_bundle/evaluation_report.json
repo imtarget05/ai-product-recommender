@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at_utc": "2026-09-18T14:56:16.843808+00:00",
+  "generated_at_utc": "2026-09-26T00:49:17.925256+00:00",
   "dataset": {
     "label": "test database",
-    "sha256": "baa4107b931457dfc7d1fb70019769cf5ceff3456a4818b137b4ddad3e5587dc",
+    "sha256": "b10810a957cf2f1b16e7f313dfe566476fa2cd0085b9bc8c667016dd917eaaa0",
     "products": 31,
-    "interactions": 4114,
-    "train_events": 3292,
-    "test_events": 822,
-    "evaluated_users": 127
+    "interactions": 4377,
+    "train_events": 3502,
+    "test_events": 875,
+    "evaluated_users": 136
   },
   "protocol": {
     "top_k": 5,
     "requested_test_ratio": 0.2,
-    "cutoff_timestamp": "2026-09-12T09:57:36.085777",
+    "cutoff_timestamp": "2026-09-19T14:02:36.618387",
     "split": "train <= cutoff; test > cutoff; timestamp ties stay in train",
     "positives": "click, add_to_cart, purchase, or rating >= 4",
     "exclude_interacted": true,
@@ -26,13 +26,13 @@
     }
   },
   "environment": {
-    "python": "3.11.15",
-    "platform": "macOS-27.0-arm64-arm-64bit",
+    "python": "3.11.0",
+    "platform": "Windows-10-10.0.26200-SP0",
     "packages": {
       "numpy": "1.26.4",
       "scipy": "1.17.1",
       "scikit-learn": "1.9.1",
-      "sqlalchemy": "2.0.54"
+      "sqlalchemy": "2.1.1"
     }
   },
   "limitations": [
@@ -46,49 +46,49 @@
   ],
   "results": {
     "PopularityBaseline": {
-      "Precision@5": 0.0378,
-      "Recall@5": 0.0734,
-      "HitRate@5": 0.1732,
-      "NDCG@5": 0.0543,
-      "MAP@5": 0.0329,
-      "CatalogCoverage": 0.6774,
-      "EvaluatedUsers": 127
+      "Precision@5": 0.025,
+      "Recall@5": 0.0646,
+      "HitRate@5": 0.125,
+      "NDCG@5": 0.0456,
+      "MAP@5": 0.0292,
+      "CatalogCoverage": 0.5806,
+      "EvaluatedUsers": 136
     },
     "ContentBased": {
-      "Precision@5": 0.0441,
-      "Recall@5": 0.0845,
-      "HitRate@5": 0.2047,
-      "NDCG@5": 0.0629,
-      "MAP@5": 0.0382,
+      "Precision@5": 0.0382,
+      "Recall@5": 0.0871,
+      "HitRate@5": 0.1912,
+      "NDCG@5": 0.0615,
+      "MAP@5": 0.037,
       "CatalogCoverage": 0.9677,
-      "EvaluatedUsers": 127
+      "EvaluatedUsers": 136
     },
     "CollaborativeFiltering": {
-      "Precision@5": 0.0378,
-      "Recall@5": 0.0744,
-      "HitRate@5": 0.1732,
-      "NDCG@5": 0.0556,
-      "MAP@5": 0.033,
+      "Precision@5": 0.0162,
+      "Recall@5": 0.0288,
+      "HitRate@5": 0.0735,
+      "NDCG@5": 0.028,
+      "MAP@5": 0.0185,
       "CatalogCoverage": 1.0,
-      "EvaluatedUsers": 127
+      "EvaluatedUsers": 136
     },
     "HybridRecommender": {
-      "Precision@5": 0.0315,
-      "Recall@5": 0.0665,
-      "HitRate@5": 0.1575,
-      "NDCG@5": 0.0495,
-      "MAP@5": 0.0298,
-      "CatalogCoverage": 0.9032,
-      "EvaluatedUsers": 127
+      "Precision@5": 0.025,
+      "Recall@5": 0.0559,
+      "HitRate@5": 0.125,
+      "NDCG@5": 0.0506,
+      "MAP@5": 0.0386,
+      "CatalogCoverage": 0.9355,
+      "EvaluatedUsers": 136
     },
     "Pipeline (Hybrid + Reranker)": {
-      "Precision@5": 0.0378,
-      "Recall@5": 0.0764,
-      "HitRate@5": 0.189,
-      "NDCG@5": 0.0548,
-      "MAP@5": 0.0317,
-      "CatalogCoverage": 0.871,
-      "EvaluatedUsers": 127
+      "Precision@5": 0.0235,
+      "Recall@5": 0.0522,
+      "HitRate@5": 0.1176,
+      "NDCG@5": 0.0473,
+      "MAP@5": 0.0362,
+      "CatalogCoverage": 0.9355,
+      "EvaluatedUsers": 136
     }
   }
 }
